@@ -164,12 +164,83 @@ class SchematicAnalyzer:
         self.json_processor = JSONProcessor()
 
         self.prompt_template = PromptTemplate(
-            input_variables=["image_url"],
+            input_variables=["image_url", "analysis_depth", "component_categories"],
             template=(
-                "As an expert electrical engineer, please analyze the schematic design "
-                "at the following URL: {image_url}. "
-                "List all components in JSON format with component name, part number, "
-                "manufacturer, and features. Return ONLY valid JSON array format."
+                "As an expert electrical engineer with 15+ years of PCB design experience, "
+                "perform a comprehensive schematic analysis of the design at: {image_url}\n\n"
+                
+                "ANALYSIS REQUIREMENTS:\n"
+                "1. SYSTEMATIC SCANNING: Analyze top-left to bottom-right, then by functional blocks\n"
+                "2. COMPLETE EXTRACTION: Identify ALL visible components including reference designators\n"
+                "3. TECHNICAL PRECISION: Extract exact specifications from visible part numbers and values\n"
+                "4. FUNCTIONAL GROUPING: Organize components by circuit function (Power, Interface, Control, etc.)\n\n"
+                
+                "COMPONENT SPECIFICATION EXTRACTION:\n"
+                "For each component type, extract these parameters:\n"
+                "- Semiconductors: Part number, package type, supply voltage range, current ratings, key electrical parameters\n"
+                "- Passives: Precise values with units, tolerance, power/voltage ratings, package size, material properties\n"
+                "- Connectors: Type, pin count, current/voltage ratings, mechanical specifications\n\n"
+                
+                "ANALYSIS DEPTH: {analysis_depth}\n"
+                "FOCUS CATEGORIES: {component_categories}\n\n"
+                
+                "REQUIRED JSON OUTPUT FORMAT:\n"
+                "{{\n"
+                "  \"boardInfo\": {{\n"
+                "    \"title\": \"Board name from schematic\",\n"
+                "    \"revision\": \"Hardware revision if visible\",\n"
+                "    \"date\": \"Design date if visible\",\n"
+                "    \"totalComponents\": \"Total component count\"\n"
+                "  }},\n"
+                "  \"components\": [\n"
+                "    {{\n"
+                "      \"plName\": \"Component Category (e.g., MOSFETs, Microcontrollers)\",\n"
+                "      \"selectedFilters\": [\n"
+                "        {{\n"
+                "          \"fetName\": \"Part Number\",\n"
+                "          \"values\": [{{\"value\": \"Exact manufacturer part number\"}}]\n"
+                "        }},\n"
+                "        {{\n"
+                "          \"fetName\": \"Package Type\",\n"
+                "          \"values\": [{{\"value\": \"Package with pin count (e.g., SOIC-8, QFN-32)\"}}]\n"
+                "        }},\n"
+                "        {{\n"
+                "          \"fetName\": \"Supply Voltage Range\",\n"
+                "          \"values\": [{{\"value\": \"Voltage range with units (e.g., 3.0V to 5.5V)\"}}]\n"
+                "        }},\n"
+                "        {{\n"
+                "          \"fetName\": \"Key Electrical Parameter\",\n"
+                "          \"values\": [{{\"value\": \"Specification with units and conditions\"}}]\n"
+                "        }}\n"
+                "      ],\n"
+                "      \"designator\": \"Reference designator from schematic (e.g., U1, R5, C12)\",\n"
+                "      \"quantity\": \"Number of this component type\",\n"
+                "      \"functionalBlock\": \"Circuit function (Power Management, Interface, Control, etc.)\",\n"
+                "      \"notes\": \"Critical specifications or alternatives\"\n"
+                "    }}\n"
+                "  ],\n"
+                "  \"powerRequirements\": {{\n"
+                "    \"inputVoltage\": \"Input voltage specifications\",\n"
+                "    \"outputVoltages\": [\"List of regulated output voltages\"],\n"
+                "    \"estimatedCurrent\": \"Typical current consumption\"\n"
+                "  }},\n"
+                "  \"analysisQuality\": {{\n"
+                "    \"componentsIdentified\": \"Number of components successfully identified\",\n"
+                "    \"confidenceLevel\": \"High/Medium/Low based on schematic clarity\",\n"
+                "    \"missingData\": [\"List any unclear or missing component information\"]\n"
+                "  }}\n"
+                "}}\n\n"
+                
+                "CRITICAL REQUIREMENTS:\n"
+                "- Return ONLY valid JSON - no explanatory text before or after\n"
+                "- Include ALL visible components, even if specifications are partial\n"
+                "- Use exact part numbers when visible, generic types when not\n"
+                "- Verify electrical specifications are realistic and manufacturable\n"
+                "- Group similar components but list each unique specification\n"
+                "- Include quantity counts and reference designators\n"
+                "- Provide confidence assessment for component identification\n\n"
+                
+                "Begin comprehensive analysis now:"
             )
         )
 
@@ -181,7 +252,9 @@ class SchematicAnalyzer:
             # Step 1: LLM Analysis
             self.progress.info("AI Analysis", "Gemini LLM analyzing schematic components...")
 
-            message = self.prompt_template.format(image_url=image_url)
+            message = self.prompt_template.format(image_url=image_url,
+                analysis_depth="STANDARD",
+                component_categories="All visible components")
             response = self.llm.invoke([HumanMessage(content=message)])
             raw_response = response.content
 

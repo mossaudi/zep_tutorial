@@ -57,11 +57,15 @@ def get_dependencies() -> ToolDependencies:
 def analyze_schematic(image_url: str) -> str:
     """Analyze a schematic design image from a URL and return enhanced component details.
 
+    This tool is OPTIMIZED for parametric search integration. When technical specifications
+    are found, the output is formatted for immediate use with parametric_search tool.
+
     Args:
         image_url: URL of the schematic image to analyze
 
     Returns:
-        Formatted table showing component analysis results with Silicon Expert data
+        Formatted table showing component analysis results with Silicon Expert data,
+        plus parametric search recommendations when applicable
     """
     try:
         deps = get_dependencies()
@@ -70,7 +74,7 @@ def analyze_schematic(image_url: str) -> str:
         if not search_result.success:
             return f"Analysis failed: {search_result.error_message}"
 
-        # NEW: Update conversation context
+        # Update conversation context
         if search_result.components:
             component_data = [
                 {
@@ -86,22 +90,171 @@ def analyze_schematic(image_url: str) -> str:
 
         table_output = deps.formatter.format_search_result(search_result)
 
-        # NEW: Add intelligent suggestions
+        # NEW: Add parametric search optimization
+        parametric_suggestions = _generate_parametric_suggestions(search_result.components)
+        if parametric_suggestions:
+            table_output += "\n" + "=" * 80 + "\n"
+            table_output += "🎯 PARAMETRIC SEARCH OPTIMIZATION DETECTED!\n"
+            table_output += "=" * 80 + "\n"
+            table_output += "The following components have structured technical data perfect for parametric search:\n\n"
+            table_output += parametric_suggestions
+            table_output += "\n💡 RECOMMENDATION: Use 'parametric search' for more precise component matching!\n"
+            table_output += "=" * 80 + "\n"
+
+        # Add intelligent suggestions
         if search_result.components:
             suggestions = (
-                "\n💡 INTELLIGENT SUGGESTIONS:\n"
+                "\n💡 INTELLIGENT NEXT STEPS:\n"
                 "Based on your analysis, the system recommends:\n"
-                f"1. 'create_bom_from_schematic' - Complete workflow with {len(search_result.components)} components\n"
-                "2. 'search_component_data' - Enhance component information\n"
-                "3. 'create_empty_bom' - Custom BOM structure\n"
-                "\nJust tell me what you'd like to do next!"
             )
+
+            # Prioritize parametric search if technical specs are available
+            if _has_parametric_data(search_result.components):
+                suggestions += f"1. 'parametric_search' - BEST MATCH for {len(search_result.components)} components with technical specs\n"
+                suggestions += f"2. 'create_bom_from_schematic' - Complete workflow automation\n"
+                suggestions += f"3. 'search_component_data' - Alternative general search\n"
+            else:
+                suggestions += f"1. 'create_bom_from_schematic' - Complete workflow with {len(search_result.components)} components\n"
+                suggestions += f"2. 'search_component_data' - Enhance component information\n"
+                suggestions += f"3. 'create_empty_bom' - Custom BOM structure\n"
+
+            suggestions += "\nJust tell me what you'd like to do next!"
             table_output += suggestions
 
         return table_output
 
     except Exception as e:
         return f"Error analyzing schematic: {str(e)}"
+
+
+def _generate_parametric_suggestions(components) -> str:
+    """Generate parametric search suggestions from components."""
+    parametric_components = []
+
+    for comp in components:
+        # Check if component has technical specifications that would benefit from parametric search
+        if (comp.silicon_expert_data and
+                comp.silicon_expert_data.product_line and
+                _has_technical_specs(comp)):
+            parametric_components.append({
+                'name': comp.name,
+                'product_line': comp.silicon_expert_data.product_line,
+                'part_number': comp.effective_part_number,
+                'manufacturer': comp.effective_manufacturer
+            })
+
+    if not parametric_components:
+        return ""
+
+    suggestions = ""
+    for comp in parametric_components[:5]:  # Limit to top 5
+        suggestions += f"📊 {comp['name']}: {comp['product_line']} ({comp['manufacturer']})\n"
+        suggestions += f"   Part: {comp['part_number']}\n\n"
+
+    return suggestions
+
+
+def _has_technical_specs(component) -> bool:
+    """Check if component has technical specifications suitable for parametric search."""
+    if not component.silicon_expert_data:
+        return False
+
+    # Check for product lines that typically have rich parametric data
+    parametric_product_lines = [
+        'MOSFETs', 'Microcontrollers', 'Operational Amplifiers', 'Voltage Regulators',
+        'Laser Diodes', 'Power Management', 'Analog Switches', 'Logic Gates',
+        'Memory', 'Processors', 'Transceivers', 'Comparators', 'ADCs', 'DACs'
+    ]
+
+    product_line = component.silicon_expert_data.product_line or ""
+    return any(pl.lower() in product_line.lower() for pl in parametric_product_lines)
+
+
+def _has_parametric_data(components) -> bool:
+    """Check if any components have data suitable for parametric search."""
+    return any(_has_technical_specs(comp) for comp in components)
+
+
+# Enhanced parametric_search tool with better suggestions:
+
+@tool
+def parametric_search(product_line: str,
+                      selected_filters: str = "[]",
+                      level: int = 3,
+                      keyword: str = "",
+                      page_number: int = 1,
+                      page_size: int = 50) -> str:
+    """🎯 OPTIMIZED: Search parts by technical criteria using parametric search.
+
+    This is the PREFERRED tool for components with technical specifications.
+    It provides much more precise results than general component search.
+
+    Args:
+        product_line: Product line name (e.g., "Laser Diodes", "MOSFETs")
+        selected_filters: JSON array of filter objects with fetName and values
+        level: Taxonomy tree level (1=main category, 2=sub category, 3=product line)
+        keyword: Filter on part number, description, or manufacturer name
+        page_number: Page number for pagination (default: 1)
+        page_size: Number of parts per page (default: 50, max: 500)
+
+    Returns:
+        JSON response with parametric search results plus intelligent suggestions
+
+    Examples:
+        # Search laser diodes with current range filter
+        parametric_search("Laser Diodes", '[{"fetName": "Maximum Output Current", "values":[{"value": "40000 TO 50000"}]}]')
+
+        # Search MOSFETs with multiple values for same feature
+        parametric_search("MOSFETs", '[{"fetName": "Typical Gate Charge @ Vgs", "values":[{"value": "0.49"}, {"value": "170"}]}]')
+    """
+    try:
+        deps = get_dependencies()
+
+        # Parse filters from JSON
+        try:
+            filters_list = json.loads(selected_filters) if selected_filters else []
+            if not isinstance(filters_list, list):
+                return "Error: selected_filters must be a JSON array"
+        except json.JSONDecodeError as e:
+            return f"Error: Invalid JSON format for selected_filters - {str(e)}"
+
+        # Perform parametric search
+        result = deps.silicon_expert_client.parametric_search(
+            product_line=product_line,
+            selected_filters=filters_list if filters_list else None,
+            level=level,
+            keyword=keyword,
+            page_number=page_number,
+            page_size=page_size
+        )
+
+        # Enhanced result processing
+        if result.get('Status', {}).get('Success') == 'true':
+            search_results = result.get('Result', {})
+            total_items = search_results.get('TotalItems', 0)
+            parts = search_results.get('Parts', [])
+
+            # Add intelligent suggestions to the response
+            enhanced_result = result.copy()
+            enhanced_result['IntelligentSuggestions'] = {
+                'success': True,
+                'total_found': total_items,
+                'showing': len(parts),
+                'next_steps': [
+                    f"Found {total_items} {product_line} matching your criteria",
+                    "Use 'create_empty_bom' to create a new BOM with selected parts",
+                    "Or use 'add_parts_to_bom' to add to existing BOM",
+                    "Refine search with additional filters if needed"
+                ],
+                'parametric_optimization': f"✅ Parametric search optimal for {product_line}"
+            }
+
+            return json.dumps(enhanced_result, indent=2)
+        else:
+            return json.dumps(result, indent=2)
+
+    except Exception as e:
+        return f"Error in parametric search: {str(e)}"
 
 
 @tool
@@ -322,63 +475,6 @@ def create_bom_from_schematic(image_url: str, bom_name: str, parent_path: str = 
 
     except Exception as e:
         return f"Error in create BOM from schematic workflow: {str(e)}"
-
-
-@tool
-def parametric_search(product_line: str,
-                      selected_filters: str = "[]",
-                      level: int = 3,
-                      keyword: str = "",
-                      page_number: int = 1,
-                      page_size: int = 50) -> str:
-    """Search parts by technical criteria using parametric search.
-
-    Args:
-        product_line: Product line name (e.g., "Laser Diodes", "MOSFETs")
-        selected_filters: JSON array of filter objects with fetName and values
-        level: Taxonomy tree level (1=main category, 2=sub category, 3=product line)
-        keyword: Filter on part number, description, or manufacturer name
-        page_number: Page number for pagination (default: 1)
-        page_size: Number of parts per page (default: 50, max: 500)
-
-    Returns:
-        JSON response with parametric search results
-
-    Examples:
-        # Search laser diodes with current range filter
-        parametric_search("Laser Diodes", '[{"fetName": "Maximum Output Current", "values":[{"value": "40000 TO 50000"}]}]')
-
-        # Search MOSFETs with multiple values for same feature
-        parametric_search("MOSFETs", '[{"fetName": "Typical Gate Charge @ Vgs", "values":[{"value": "0.49"}, {"value": "170"}]}]')
-
-        # Search with multiple features
-        parametric_search("MOSFETs", '[{"fetName": "Power Supply Type", "values":[{"value": "Single"}]}, {"fetName": "Maximum Single Supply Voltage", "values":[{"value": "3 to 4"}]}]')
-    """
-    try:
-        deps = get_dependencies()
-
-        # Parse filters from JSON
-        try:
-            filters_list = json.loads(selected_filters) if selected_filters else []
-            if not isinstance(filters_list, list):
-                return "Error: selected_filters must be a JSON array"
-        except json.JSONDecodeError as e:
-            return f"Error: Invalid JSON format for selected_filters - {str(e)}"
-
-        # Perform parametric search
-        result = deps.silicon_expert_client.parametric_search(
-            product_line=product_line,
-            selected_filters=filters_list if filters_list else None,
-            level=level,
-            keyword=keyword,
-            page_number=page_number,
-            page_size=page_size
-        )
-
-        return json.dumps(result, indent=2)
-
-    except Exception as e:
-        return f"Error in parametric search: {str(e)}"
 
 
 # Export tools list
