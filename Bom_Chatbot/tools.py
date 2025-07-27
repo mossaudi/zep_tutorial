@@ -12,6 +12,7 @@ from models import Component
 from services.analysis import ComponentAnalysisService
 from services.formatter import ComponentTableFormatter, ComponentDataConverter
 from services.workflow import BOMWorkflowService, BOMManagementService
+from services.intelligent_selection import ConversationContext
 
 
 class ToolDependencies:
@@ -28,6 +29,11 @@ class ToolDependencies:
         self.bom_service = BOMManagementService(self.silicon_expert_client)
         self.formatter = ComponentTableFormatter()
         self.converter = ComponentDataConverter()
+        self.conversation_context = ConversationContext(
+            recent_messages=[],
+            previous_tool_results=[],
+            available_data={}
+        )
 
 
 # Global dependencies instance (will be initialized in main)
@@ -59,15 +65,38 @@ def analyze_schematic(image_url: str) -> str:
     """
     try:
         deps = get_dependencies()
-
-        # Perform analysis
         search_result = deps.analysis_service.analyze_schematic(image_url)
 
         if not search_result.success:
             return f"Analysis failed: {search_result.error_message}"
 
-        # Format results as table
+        # NEW: Update conversation context
+        if search_result.components:
+            component_data = [
+                {
+                    'name': comp.name,
+                    'part_number': comp.part_number,
+                    'manufacturer': comp.manufacturer,
+                    'description': comp.description
+                }
+                for comp in search_result.components
+            ]
+            deps.conversation_context.available_data['active_components'] = component_data
+            deps.conversation_context.available_data['component_count'] = len(component_data)
+
         table_output = deps.formatter.format_search_result(search_result)
+
+        # NEW: Add intelligent suggestions
+        if search_result.components:
+            suggestions = (
+                "\n💡 INTELLIGENT SUGGESTIONS:\n"
+                "Based on your analysis, the system recommends:\n"
+                f"1. 'create_bom_from_schematic' - Complete workflow with {len(search_result.components)} components\n"
+                "2. 'search_component_data' - Enhance component information\n"
+                "3. 'create_empty_bom' - Custom BOM structure\n"
+                "\nJust tell me what you'd like to do next!"
+            )
+            table_output += suggestions
 
         return table_output
 

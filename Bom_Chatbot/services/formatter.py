@@ -1,6 +1,6 @@
 # services/formatter.py
 """Component table formatting service."""
-
+import json
 from typing import List, Dict, Any, Optional
 from collections import Counter
 
@@ -226,6 +226,28 @@ class ComponentTableFormatter:
                 "• View existing BOMs: get_boms()\n"
                 "• Add parts to existing BOM: add_parts_to_bom(name='BOM_NAME', parent_path='PROJECT_PATH', parts_json='COMPONENT_DATA')\n" +
                 "=" * 120 + "\n"
+        )
+
+    def format_intelligent_suggestions(self, available_data: Dict[str, Any]) -> str:
+        """Generate intelligent suggestions based on available data."""
+        suggestions = []
+
+        if available_data.get('active_components'):
+            component_count = available_data.get('component_count', 0)
+            suggestions.append(f"🔧 You have {component_count} components ready for BOM creation")
+
+        if available_data.get('last_bom_name'):
+            bom_name = available_data['last_bom_name']
+            suggestions.append(f"📋 Recent BOM: '{bom_name}' available for updates")
+
+        if not suggestions:
+            suggestions.append("🚀 Start by analyzing a schematic: 'analyze schematic at [URL]'")
+
+        return (
+                "\n" + "=" * 80 + "\n"
+                                  "🧠 INTELLIGENT SUGGESTIONS:\n" +
+                "=" * 80 + "\n" +
+                "\n".join(f"  {suggestion}" for suggestion in suggestions) + "\n"
         )
 
 

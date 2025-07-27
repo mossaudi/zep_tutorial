@@ -3,7 +3,7 @@
 
 import getpass
 import time
-from typing import Annotated
+from typing import Annotated, List
 from typing_extensions import TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -17,14 +17,18 @@ from config import AppConfig
 from exceptions import ConfigurationError, AgentError
 from tools import initialize_tools, get_tools
 from services.progress import get_progress_tracker, ProgressTracker, ConsoleProgressObserver
+from services.intelligent_selection import IntelligentToolSelector, ConversationContext
+from typing import Optional
 
 
 class State(TypedDict):
-    """Enhanced state for component analysis tracking."""
+    """Enhanced state for intelligent tool selection."""
     messages: Annotated[list, add_messages]
     component_data: str
     needs_table_display: bool
     current_step: str
+    conversation_context: ConversationContext
+    recommended_tools: List[str]
 
 
 class LangGraphAgent:
@@ -46,6 +50,12 @@ class LangGraphAgent:
         # Initialize tools
         initialize_tools(config, self.llm)
         self.tools = get_tools()
+        self.tool_selector = IntelligentToolSelector(self.llm, self.tools)
+        self.conversation_context = ConversationContext(
+            recent_messages=[],
+            previous_tool_results=[],
+            available_data={}
+        )
 
         # Create graph
         self._create_graph()
@@ -72,50 +82,77 @@ class LangGraphAgent:
         """Create and compile the LangGraph workflow."""
         self.progress.info("Graph Creation", "Building LangGraph workflow...")
 
-        # Bind tools to LLM
-        llm_with_tools = self.llm.bind_tools(self.tools)
-
-        # Create tool node
         tool_node = ToolNode(self.tools)
-
-        # Create graph builder
         graph_builder = StateGraph(State)
 
-        # Add nodes
-        graph_builder.add_node("chatbot", self._chatbot_node)
+        # Add nodes - MODIFIED
+        graph_builder.add_node("intelligent_selection", self._intelligent_selection_node)
+        graph_builder.add_node("chatbot", self._enhanced_chatbot_node)
         graph_builder.add_node("tools", tool_node)
         graph_builder.add_node("table_display", self._table_display_node)
 
-        # Add edges
+        # Add edges - MODIFIED
+        graph_builder.add_edge(START, "intelligent_selection")
+        graph_builder.add_edge("intelligent_selection", "chatbot")
         graph_builder.add_conditional_edges("chatbot", tools_condition)
         graph_builder.add_edge("tools", "chatbot")
         graph_builder.add_conditional_edges(
-            "chatbot",
-            self._should_display_table,
-            {
-                "table_display": "table_display",
-                "end": END
-            }
+            "chatbot", self._should_display_table,
+            {"table_display": "table_display", "end": END}
         )
         graph_builder.add_edge("table_display", END)
-        graph_builder.add_edge(START, "chatbot")
 
-        # Create memory and compile
         memory = MemorySaver()
         self.graph = graph_builder.compile(checkpointer=memory)
-
         self.progress.success("Graph Creation", "LangGraph workflow compiled")
 
-    def _chatbot_node(self, state: State):
-        """Main chatbot node that processes user input."""
-        llm_with_tools = self.llm.bind_tools(self.tools)
+    def _intelligent_selection_node(self, state: State):
+        """Use LLM to intelligently select appropriate tools."""
+        if not state.get("messages"):
+            return state
+
+        last_message = state["messages"][-1]
+        if hasattr(last_message, 'content') and isinstance(last_message.content, str):
+            context = state.get("conversation_context", self.conversation_context)
+            context.recent_messages.append(last_message.content)
+
+            recommendations = self.tool_selector.select_tools(last_message.content, context)
+
+            recommended_tool_names = []
+            for rec in recommendations:
+                recommended_tool_names.append(rec.tool_name)
+                self.progress.info("Tool Reasoning",
+                                   f"{rec.tool_name} (confidence: {rec.confidence:.2f}): {rec.reasoning}")
+
+            return {
+                "conversation_context": context,
+                "recommended_tools": recommended_tool_names
+            }
+        return state
+
+    def _enhanced_chatbot_node(self, state: State):
+        """Enhanced chatbot that uses intelligently selected tools."""
+        recommended_tools = state.get("recommended_tools", [])
+
+        if recommended_tools:
+            dynamic_tools = []
+            for tool_name in recommended_tools[:3]:
+                tool = next((t for t in self.tools if t.name == tool_name), None)
+                if tool:
+                    dynamic_tools.append(tool)
+            tools_to_bind = dynamic_tools if dynamic_tools else self.tools
+
+            tool_names = [t.name for t in tools_to_bind]
+            self.progress.info("Dynamic Tools", f"Using: {', '.join(tool_names)}")
+        else:
+            tools_to_bind = self.tools
+
+        llm_with_tools = self.llm.bind_tools(tools_to_bind)
         response = llm_with_tools.invoke(state["messages"])
 
-        # Check if any tool was called
         if hasattr(response, 'tool_calls') and response.tool_calls:
             return {"messages": [response]}
 
-        # Check if response contains component analysis results
         if self._contains_component_data(state):
             last_message = state["messages"][-1]
             return {
@@ -124,11 +161,7 @@ class LangGraphAgent:
                 "needs_table_display": True
             }
 
-        return {
-            "messages": [response],
-            "component_data": "",
-            "needs_table_display": False
-        }
+        return {"messages": [response], "component_data": "", "needs_table_display": False}
 
     def _table_display_node(self, state: State):
         """Node that handles component analysis table display."""
