@@ -1,7 +1,8 @@
 # tools.py
-"""Refactored LangGraph tools using the new service architecture."""
+"""Refactored LangGraph tools with enhanced descriptions and optimized parametric search."""
 
 import json
+from typing import Optional
 
 from langchain.tools import tool
 
@@ -12,7 +13,6 @@ from models import Component
 from services.analysis import ComponentAnalysisService
 from services.formatter import ComponentTableFormatter, ComponentDataConverter
 from services.workflow import BOMWorkflowService, BOMManagementService
-from services.intelligent_selection import ConversationContext
 
 
 class ToolDependencies:
@@ -29,11 +29,6 @@ class ToolDependencies:
         self.bom_service = BOMManagementService(self.silicon_expert_client)
         self.formatter = ComponentTableFormatter()
         self.converter = ComponentDataConverter()
-        self.conversation_context = ConversationContext(
-            recent_messages=[],
-            previous_tool_results=[],
-            available_data={}
-        )
 
 
 # Global dependencies instance (will be initialized in main)
@@ -55,10 +50,24 @@ def get_dependencies() -> ToolDependencies:
 
 @tool
 def analyze_schematic(image_url: str) -> str:
-    """Analyze a schematic design image from a URL and return enhanced component details.
+    """🔍 ANALYZE SCHEMATIC: Extract component data from schematic images with parametric search optimization.
 
-    This tool is OPTIMIZED for parametric search integration. When technical specifications
-    are found, the output is formatted for immediate use with parametric_search tool.
+    🎯 BEST FOR:
+    - Circuit schematic images from URLs
+    - Extracting component specifications for BOM creation
+    - Converting visual schematics to structured component data
+
+    🚀 OPTIMIZATION: Automatically formats output for parametric search when technical specs are found
+
+    🔧 WHEN TO USE:
+    - User provides schematic image URL
+    - Want to identify components in a circuit
+    - Starting point for BOM creation workflow
+
+    💡 WHAT HAPPENS NEXT:
+    - Use 'parametric_search' if technical specifications are found
+    - Use 'create_bom_from_schematic' for complete workflow
+    - Use 'search_component_data' for additional component details
 
     Args:
         image_url: URL of the schematic image to analyze
@@ -74,23 +83,9 @@ def analyze_schematic(image_url: str) -> str:
         if not search_result.success:
             return f"Analysis failed: {search_result.error_message}"
 
-        # Update conversation context
-        if search_result.components:
-            component_data = [
-                {
-                    'name': comp.name,
-                    'part_number': comp.part_number,
-                    'manufacturer': comp.manufacturer,
-                    'description': comp.description
-                }
-                for comp in search_result.components
-            ]
-            deps.conversation_context.available_data['active_components'] = component_data
-            deps.conversation_context.available_data['component_count'] = len(component_data)
-
         table_output = deps.formatter.format_search_result(search_result)
 
-        # NEW: Add parametric search optimization
+        # Add parametric search optimization
         parametric_suggestions = _generate_parametric_suggestions(search_result.components)
         if parametric_suggestions:
             table_output += "\n" + "=" * 80 + "\n"
@@ -108,7 +103,6 @@ def analyze_schematic(image_url: str) -> str:
                 "Based on your analysis, the system recommends:\n"
             )
 
-            # Prioritize parametric search if technical specs are available
             if _has_parametric_data(search_result.components):
                 suggestions += f"1. 'parametric_search' - BEST MATCH for {len(search_result.components)} components with technical specs\n"
                 suggestions += f"2. 'create_bom_from_schematic' - Complete workflow automation\n"
@@ -127,56 +121,6 @@ def analyze_schematic(image_url: str) -> str:
         return f"Error analyzing schematic: {str(e)}"
 
 
-def _generate_parametric_suggestions(components) -> str:
-    """Generate parametric search suggestions from components."""
-    parametric_components = []
-
-    for comp in components:
-        # Check if component has technical specifications that would benefit from parametric search
-        if (comp.silicon_expert_data and
-                comp.silicon_expert_data.product_line and
-                _has_technical_specs(comp)):
-            parametric_components.append({
-                'name': comp.name,
-                'product_line': comp.silicon_expert_data.product_line,
-                'part_number': comp.effective_part_number,
-                'manufacturer': comp.effective_manufacturer
-            })
-
-    if not parametric_components:
-        return ""
-
-    suggestions = ""
-    for comp in parametric_components[:5]:  # Limit to top 5
-        suggestions += f"📊 {comp['name']}: {comp['product_line']} ({comp['manufacturer']})\n"
-        suggestions += f"   Part: {comp['part_number']}\n\n"
-
-    return suggestions
-
-
-def _has_technical_specs(component) -> bool:
-    """Check if component has technical specifications suitable for parametric search."""
-    if not component.silicon_expert_data:
-        return False
-
-    # Check for product lines that typically have rich parametric data
-    parametric_product_lines = [
-        'MOSFETs', 'Microcontrollers', 'Operational Amplifiers', 'Voltage Regulators',
-        'Laser Diodes', 'Power Management', 'Analog Switches', 'Logic Gates',
-        'Memory', 'Processors', 'Transceivers', 'Comparators', 'ADCs', 'DACs'
-    ]
-
-    product_line = component.silicon_expert_data.product_line or ""
-    return any(pl.lower() in product_line.lower() for pl in parametric_product_lines)
-
-
-def _has_parametric_data(components) -> bool:
-    """Check if any components have data suitable for parametric search."""
-    return any(_has_technical_specs(comp) for comp in components)
-
-
-# Enhanced parametric_search tool with better suggestions:
-
 @tool
 def parametric_search(product_line: str,
                       selected_filters: str = "[]",
@@ -184,10 +128,24 @@ def parametric_search(product_line: str,
                       keyword: str = "",
                       page_number: int = 1,
                       page_size: int = 50) -> str:
-    """🎯 OPTIMIZED: Search parts by technical criteria using parametric search.
+    """🎯 PARAMETRIC SEARCH: Search components by technical specifications (PREFERRED for technical specs).
 
-    This is the PREFERRED tool for components with technical specifications.
-    It provides much more precise results than general component search.
+    🚀 PRIORITY TOOL: Use this when you have:
+    - Product line names (MOSFETs, Microcontrollers, Operational Amplifiers, etc.)
+    - Technical specifications (voltage, current, package type)
+    - Structured component data with plName/selectedFilters
+    - Components from analyze_schematic output
+
+    🔧 WHEN TO USE:
+    - Previous tool output contains "plName" and "selectedFilters"
+    - User mentions specific component categories
+    - Need precise filtering by technical parameters
+    - Want the most accurate component matching for technical specs
+
+    💡 WHAT HAPPENS NEXT:
+    - Create new BOM with results
+    - Add components to existing BOM
+    - Refine search with additional filters
 
     Args:
         product_line: Product line name (e.g., "Laser Diodes", "MOSFETs")
@@ -259,7 +217,24 @@ def parametric_search(product_line: str,
 
 @tool
 def search_component_data(components_json: str) -> str:
-    """Search for component data using Silicon Expert API.
+    """🔍 SEARCH COMPONENT DATA: General component search using keywords (use when parametric search isn't suitable).
+
+    🎯 BEST FOR:
+    - Known part numbers or basic component information
+    - When you have component JSON data without technical specifications
+    - General component database searches
+    - Alternative when parametric search isn't suitable
+
+    🔧 WHEN TO USE:
+    - Have component names/part numbers but no technical specs
+    - Need to enhance basic component information
+    - Parametric data is not available
+    - Searching by manufacturer or generic descriptions
+
+    💡 WHAT HAPPENS NEXT:
+    - Create BOM with found components
+    - Add to existing BOM
+    - Use results for further analysis
 
     Args:
         components_json: JSON string containing component data
@@ -312,7 +287,7 @@ def search_component_data(components_json: str) -> str:
         successful_searches = len([c for c in enhanced_components if c.silicon_expert_data])
         failed_searches = len(enhanced_components) - successful_searches
 
-        from .models import SearchResult
+        from models import SearchResult
         search_result = SearchResult(
             success=True,
             components=enhanced_components,
@@ -330,7 +305,21 @@ def search_component_data(components_json: str) -> str:
 
 @tool
 def create_empty_bom(name: str, columns: str, description: str = "", parent_path: str = "") -> str:
-    """Create an empty BOM in SiliconExpert P5 BOM manager.
+    """📋 CREATE EMPTY BOM: Create new Bill of Materials structure for custom BOM projects.
+
+    🎯 BEST FOR:
+    - Starting a new BOM project
+    - Custom BOM structure with specific columns
+    - Preparing BOM before adding components
+
+    🔧 WHEN TO USE:
+    - Want to create BOM manually
+    - Need custom column structure
+    - Preparing for component addition workflow
+
+    💡 WHAT HAPPENS NEXT:
+    - Use 'add_parts_to_bom' to populate with components
+    - Use 'get_boms' to verify creation
 
     Args:
         name: New BOM's name (mandatory)
@@ -370,7 +359,21 @@ def create_empty_bom(name: str, columns: str, description: str = "", parent_path
 def get_boms(project_name: str = "", bom_creation_date_from: str = "",
              bom_creation_date_to: str = "", bom_modification_date_from: str = "",
              bom_modification_date_to: str = "") -> str:
-    """Get BOM meta information from SiliconExpert P5 BOM manager.
+    """📋 GET BOMS: List existing Bill of Materials for BOM management and organization.
+
+    🎯 BEST FOR:
+    - Viewing existing BOM projects
+    - Finding BOM names for updates
+    - Managing BOM inventory
+
+    🔧 WHEN TO USE:
+    - Need to see available BOMs
+    - Looking for specific BOM to update
+    - BOM management and organization
+
+    💡 WHAT HAPPENS NEXT:
+    - Use 'add_parts_to_bom' to update specific BOM
+    - Reference BOM names for other operations
 
     Args:
         project_name: Filter by project name (optional)
@@ -401,7 +404,21 @@ def get_boms(project_name: str = "", bom_creation_date_from: str = "",
 
 @tool
 def add_parts_to_bom(name: str, parent_path: str, parts_json: str) -> str:
-    """Add/upload parts into a BOM.
+    """➕ ADD PARTS TO BOM: Add components to existing BOM for BOM updates and population.
+
+    🎯 BEST FOR:
+    - Adding components to existing BOM
+    - Updating BOM with new parts
+    - Populating empty BOM structure
+
+    🔧 WHEN TO USE:
+    - Have existing BOM name
+    - Want to add component data to BOM
+    - Follow-up after component search/analysis
+
+    💡 WHAT HAPPENS NEXT:
+    - BOM is updated with new components
+    - Use 'get_boms' to verify additions
 
     Args:
         name: BOM name (mandatory)
@@ -429,7 +446,21 @@ def add_parts_to_bom(name: str, parent_path: str, parts_json: str) -> str:
 @tool
 def create_bom_from_schematic(image_url: str, bom_name: str, parent_path: str = "",
                               description: str = "BOM created from schematic analysis") -> str:
-    """Complete workflow: Analyze schematic and create BOM with the identified components.
+    """🚀 COMPLETE WORKFLOW: Full schematic-to-BOM automation (end-to-end solution).
+
+    🎯 BEST FOR:
+    - End-to-end automation from schematic to finished BOM
+    - When you want complete workflow in one step
+    - Time-saving automated BOM creation
+
+    🔧 WHEN TO USE:
+    - Have schematic image and want finished BOM
+    - Don't need intermediate steps or customization
+    - Want fastest path from schematic to BOM
+
+    💡 WHAT HAPPENS NEXT:
+    - Complete BOM ready for use
+    - Use 'get_boms' to access created BOM
 
     Args:
         image_url: URL of the schematic image
@@ -475,6 +506,54 @@ def create_bom_from_schematic(image_url: str, bom_name: str, parent_path: str = 
 
     except Exception as e:
         return f"Error in create BOM from schematic workflow: {str(e)}"
+
+
+def _generate_parametric_suggestions(components) -> str:
+    """Generate parametric search suggestions from components."""
+    parametric_components = []
+
+    for comp in components:
+        # Check if component has technical specifications that would benefit from parametric search
+        if (comp.silicon_expert_data and
+                comp.silicon_expert_data.product_line and
+                _has_technical_specs(comp)):
+            parametric_components.append({
+                'name': comp.name,
+                'product_line': comp.silicon_expert_data.product_line,
+                'part_number': comp.effective_part_number,
+                'manufacturer': comp.effective_manufacturer
+            })
+
+    if not parametric_components:
+        return ""
+
+    suggestions = ""
+    for comp in parametric_components[:5]:  # Limit to top 5
+        suggestions += f"📊 {comp['name']}: {comp['product_line']} ({comp['manufacturer']})\n"
+        suggestions += f"   Part: {comp['part_number']}\n\n"
+
+    return suggestions
+
+
+def _has_technical_specs(component) -> bool:
+    """Check if component has technical specifications suitable for parametric search."""
+    if not component.silicon_expert_data:
+        return False
+
+    # Check for product lines that typically have rich parametric data
+    parametric_product_lines = [
+        'MOSFETs', 'Microcontrollers', 'Operational Amplifiers', 'Voltage Regulators',
+        'Laser Diodes', 'Power Management', 'Analog Switches', 'Logic Gates',
+        'Memory', 'Processors', 'Transceivers', 'Comparators', 'ADCs', 'DACs'
+    ]
+
+    product_line = component.silicon_expert_data.product_line or ""
+    return any(pl.lower() in product_line.lower() for pl in parametric_product_lines)
+
+
+def _has_parametric_data(components) -> bool:
+    """Check if any components have data suitable for parametric search."""
+    return any(_has_technical_specs(comp) for comp in components)
 
 
 # Export tools list

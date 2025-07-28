@@ -350,78 +350,77 @@ class SiliconExpertClient:
         except requests.RequestException as e:
             raise BOMError(f"Get BOMs request failed: {str(e)}")
 
+    def parametric_search(self,
+                          product_line: str,
+                          selected_filters: Optional[List[Dict[str, Any]]] = None,
+                          level: int = 3,
+                          keyword: str = "",
+                          page_number: int = 1,
+                          page_size: int = 50) -> Dict[str, Any]:
+        """Search parts by technical criteria using parametric search."""
+        self._ensure_authenticated()
 
-def parametric_search(self,
-                      product_line: str,
-                      selected_filters: Optional[List[Dict[str, Any]]] = None,
-                      level: int = 3,
-                      keyword: str = "",
-                      page_number: int = 1,
-                      page_size: int = 50) -> Dict[str, Any]:
-    """Search parts by technical criteria using parametric search."""
-    self._ensure_authenticated()
+        self.progress.info("Parametric Search", f"Searching product line: {product_line}")
 
-    self.progress.info("Parametric Search", f"Searching product line: {product_line}")
+        try:
+            params = {
+                'plName': product_line,
+                'fmt': 'json',
+                'level': str(level),
+                'pageNumber': str(page_number),
+                'pageSize': str(min(page_size, 500))  # Max 500 per API docs
+            }
 
-    try:
-        params = {
-            'plName': product_line,
-            'fmt': 'json',
-            'level': str(level),
-            'pageNumber': str(page_number),
-            'pageSize': str(min(page_size, 500))  # Max 500 per API docs
-        }
+            if keyword:
+                params['keyword'] = keyword
 
-        if keyword:
-            params['keyword'] = keyword
+            if selected_filters:
+                params['selectedFilters'] = json.dumps(selected_filters)
 
-        if selected_filters:
-            params['selectedFilters'] = json.dumps(selected_filters)
-
-        response = self.session.post(
-            f"{self.config.base_url}/search/parametric/getSearchResult",
-            params=params
-        )
-
-        if response.status_code != HTTP_OK:
-            raise ParametricSearchError(
-                f"Parametric search failed with HTTP {response.status_code}",
-                product_line=product_line,
-                filters=json.dumps(selected_filters) if selected_filters else "",
-                status_code=response.status_code
-            )
-
-        api_data = response.json()
-
-        # Handle authentication errors
-        if api_data and api_data.get('Status', {}).get('Code') == '39':
-            self.progress.info("Re-authentication", "Session expired, re-authenticating...")
-            self.is_authenticated = False
-            self._ensure_authenticated()
-            # Retry the request
             response = self.session.post(
                 f"{self.config.base_url}/search/parametric/getSearchResult",
                 params=params
             )
-            if response.status_code == HTTP_OK:
-                api_data = response.json()
 
-        if api_data.get('Status', {}).get('Success') == 'true':
-            total_items = api_data.get('Result', {}).get('TotalItems', '0')
-            self.progress.success(
-                "Parametric Search",
-                f"Found {total_items} parts in {product_line}"
+            if response.status_code != HTTP_OK:
+                raise ParametricSearchError(
+                    f"Parametric search failed with HTTP {response.status_code}",
+                    product_line=product_line,
+                    filters=json.dumps(selected_filters) if selected_filters else "",
+                    status_code=response.status_code
+                )
+
+            api_data = response.json()
+
+            # Handle authentication errors
+            if api_data and api_data.get('Status', {}).get('Code') == '39':
+                self.progress.info("Re-authentication", "Session expired, re-authenticating...")
+                self.is_authenticated = False
+                self._ensure_authenticated()
+                # Retry the request
+                response = self.session.post(
+                    f"{self.config.base_url}/search/parametric/getSearchResult",
+                    params=params
+                )
+                if response.status_code == HTTP_OK:
+                    api_data = response.json()
+
+            if api_data.get('Status', {}).get('Success') == 'true':
+                total_items = api_data.get('Result', {}).get('TotalItems', '0')
+                self.progress.success(
+                    "Parametric Search",
+                    f"Found {total_items} parts in {product_line}"
+                )
+            else:
+                error_msg = api_data.get('Status', {}).get('Message', 'Unknown error')
+                self.progress.error("Parametric Search", error_msg)
+
+            return api_data
+
+        except requests.RequestException as e:
+            self.progress.error("Parametric Search", str(e))
+            raise ParametricSearchError(
+                f"Parametric search request failed: {str(e)}",
+                product_line=product_line,
+                filters=json.dumps(selected_filters) if selected_filters else ""
             )
-        else:
-            error_msg = api_data.get('Status', {}).get('Message', 'Unknown error')
-            self.progress.error("Parametric Search", error_msg)
-
-        return api_data
-
-    except requests.RequestException as e:
-        self.progress.error("Parametric Search", str(e))
-        raise ParametricSearchError(
-            f"Parametric search request failed: {str(e)}",
-            product_line=product_line,
-            filters=json.dumps(selected_filters) if selected_filters else ""
-        )

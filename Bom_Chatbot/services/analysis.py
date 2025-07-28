@@ -164,7 +164,7 @@ class SchematicAnalyzer:
         self.json_processor = JSONProcessor()
 
         self.prompt_template = PromptTemplate(
-            input_variables=["image_url", "analysis_depth", "component_categories"],
+            input_variables=["image_url"],
             template=(
                 "As an expert electrical engineer with 15+ years of PCB design experience, "
                 "perform a comprehensive schematic analysis of the design at: {image_url}\n\n"
@@ -180,9 +180,6 @@ class SchematicAnalyzer:
                 "- Semiconductors: Part number, package type, supply voltage range, current ratings, key electrical parameters\n"
                 "- Passives: Precise values with units, tolerance, power/voltage ratings, package size, material properties\n"
                 "- Connectors: Type, pin count, current/voltage ratings, mechanical specifications\n\n"
-                
-                "ANALYSIS DEPTH: {analysis_depth}\n"
-                "FOCUS CATEGORIES: {component_categories}\n\n"
                 
                 "REQUIRED JSON OUTPUT FORMAT:\n"
                 "{{\n"
@@ -252,9 +249,7 @@ class SchematicAnalyzer:
             # Step 1: LLM Analysis
             self.progress.info("AI Analysis", "Gemini LLM analyzing schematic components...")
 
-            message = self.prompt_template.format(image_url=image_url,
-                analysis_depth="STANDARD",
-                component_categories="All visible components")
+            message = self.prompt_template.format(image_url=image_url)
             response = self.llm.invoke([HumanMessage(content=message)])
             raw_response = response.content
 
