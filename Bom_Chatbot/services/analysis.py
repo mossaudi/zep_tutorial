@@ -241,7 +241,7 @@ class SchematicAnalyzer:
             )
         )
 
-    def analyze(self, image_url: str) -> AnalysisResult:
+    def analyze(self, image_url: str) -> str:
         """Analyze schematic image and extract components."""
         self.progress.info("Schematic Analysis", f"Processing image from {image_url}")
 
@@ -264,37 +264,16 @@ class SchematicAnalyzer:
             # Step 2: JSON Processing
             self.progress.info("Data Processing", "Cleaning and validating JSON response...")
 
-            try:
-                cleaned_json = self.json_processor.clean_llm_response(raw_response)
-                components = self.json_processor.parse_components(cleaned_json)
+            # Return the cleaned JSON directly, raising exceptions on failure
+            # cleaned_json = self.json_processor.clean_llm_response(raw_response)
+            # self.progress.success("Data Processing", "JSON response cleaned and validated.")
 
-                self.progress.success("Data Processing", f"Parsed {len(components)} components")
-
-                return AnalysisResult(
-                    image_url=image_url,
-                    components=components,
-                    raw_response=raw_response,
-                    success=True
-                )
-
-            except (JSONProcessingError, DataValidationError) as e:
-                self.progress.error("Data Processing", str(e))
-                return AnalysisResult(
-                    image_url=image_url,
-                    components=[],
-                    raw_response=raw_response,
-                    success=False,
-                    error_message=str(e)
-                )
+            return raw_response
 
         except Exception as e:
             self.progress.error("Schematic Analysis", str(e))
-            return AnalysisResult(
-                image_url=image_url,
-                components=[],
-                success=False,
-                error_message=str(e)
-            )
+            # Re-raise as a specific error to be handled by the tool
+            raise SchematicAnalysisError(f"Analysis failed: {str(e)}", image_url=image_url)
 
 
 class ComponentAnalysisService:
@@ -307,62 +286,14 @@ class ComponentAnalysisService:
         self.schematic_analyzer = SchematicAnalyzer(llm)
         self.progress = get_progress_tracker()
 
-    def analyze_schematic(self, image_url: str) -> SearchResult:
+    def analyze_schematic(self, image_url: str) -> str:
         """Complete schematic analysis workflow."""
         self.progress.info("Component Analysis", "Starting complete analysis workflow")
 
         # Step 1: Analyze schematic
-        analysis_result = self.schematic_analyzer.analyze(image_url)
+        analysis_json = self.schematic_analyzer.analyze(image_url)
 
-        if not analysis_result.success or not analysis_result.components:
-            return SearchResult(
-                success=False,
-                components=[],
-                error_message=analysis_result.error_message or "No components found"
-            )
-
-        # Step 2: Enhance with Silicon Expert data
-        self.progress.info(
-            "Data Enhancement",
-            f"Searching Silicon Expert database for {len(analysis_result.components)} components"
-        )
-
-        try:
-            enhanced_components = self.silicon_expert_client.search_components(
-                analysis_result.components
-            )
-
-            # Calculate statistics
-            successful_searches = len([c for c in enhanced_components if c.silicon_expert_data])
-            failed_searches = len(enhanced_components) - successful_searches
-
-            self.progress.success(
-                "Component Analysis",
-                "Component data enhanced with Silicon Expert information"
-            )
-
-            return SearchResult(
-                success=True,
-                components=enhanced_components,
-                successful_searches=successful_searches,
-                failed_searches=failed_searches
-            )
-
-        except Exception as e:
-            self.progress.error("Data Enhancement", str(e))
-            # Return basic components without enhancement
-            basic_enhanced = [
-                EnhancedComponent(**component.__dict__)
-                for component in analysis_result.components
-            ]
-
-            return SearchResult(
-                success=False,
-                components=basic_enhanced,
-                successful_searches=0,
-                failed_searches=len(basic_enhanced),
-                error_message=f"Silicon Expert enhancement failed: {str(e)}"
-            )
+        return analysis_json
 
     def search_component_data(self, components: List[Component]) -> SearchResult:
         """Search for component data using Silicon Expert."""

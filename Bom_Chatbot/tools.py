@@ -50,75 +50,32 @@ def get_dependencies() -> ToolDependencies:
 
 @tool
 def analyze_schematic(image_url: str) -> str:
-    """🔍 ANALYZE SCHEMATIC: Extract component data from schematic images with parametric search optimization.
+    """🔍 ANALYZE SCHEMATIC: Extracts structured component data from a schematic image.
 
-    🎯 BEST FOR:
-    - Circuit schematic images from URLs
-    - Extracting component specifications for BOM creation
-    - Converting visual schematics to structured component data
-
-    🚀 OPTIMIZATION: Automatically formats output for parametric search when technical specs are found
-
-    🔧 WHEN TO USE:
-    - User provides schematic image URL
-    - Want to identify components in a circuit
-    - Starting point for BOM creation workflow
-
-    💡 WHAT HAPPENS NEXT:
-    - Use 'parametric_search' if technical specifications are found
-    - Use 'create_bom_from_schematic' for complete workflow
-    - Use 'search_component_data' for additional component details
+    This tool analyzes a schematic image and returns a raw, structured JSON string.
+    The agent should then inspect this JSON to decide the next best action, such as
+    using 'parametric_search' or 'search_component_data'.
 
     Args:
         image_url: URL of the schematic image to analyze
 
     Returns:
-        Formatted table showing component analysis results with Silicon Expert data,
-        plus parametric search recommendations when applicable
+        A string containing ONLY the extracted JSON data from the analysis.
     """
     try:
         deps = get_dependencies()
-        search_result = deps.analysis_service.analyze_schematic(image_url)
+        # This service call already returns a clean JSON string or raises an exception.
+        analysis_json = deps.analysis_service.analyze_schematic(image_url)
 
-        if not search_result.success:
-            return f"Analysis failed: {search_result.error_message}"
-
-        table_output = deps.formatter.format_search_result(search_result)
-
-        # Add parametric search optimization
-        parametric_suggestions = _generate_parametric_suggestions(search_result.components)
-        if parametric_suggestions:
-            table_output += "\n" + "=" * 80 + "\n"
-            table_output += "🎯 PARAMETRIC SEARCH OPTIMIZATION DETECTED!\n"
-            table_output += "=" * 80 + "\n"
-            table_output += "The following components have structured technical data perfect for parametric search:\n\n"
-            table_output += parametric_suggestions
-            table_output += "\n💡 RECOMMENDATION: Use 'parametric search' for more precise component matching!\n"
-            table_output += "=" * 80 + "\n"
-
-        # Add intelligent suggestions
-        if search_result.components:
-            suggestions = (
-                "\n💡 INTELLIGENT NEXT STEPS:\n"
-                "Based on your analysis, the system recommends:\n"
-            )
-
-            if _has_parametric_data(search_result.components):
-                suggestions += f"1. 'parametric_search' - BEST MATCH for {len(search_result.components)} components with technical specs\n"
-                suggestions += f"2. 'create_bom_from_schematic' - Complete workflow automation\n"
-                suggestions += f"3. 'search_component_data' - Alternative general search\n"
-            else:
-                suggestions += f"1. 'create_bom_from_schematic' - Complete workflow with {len(search_result.components)} components\n"
-                suggestions += f"2. 'search_component_data' - Enhance component information\n"
-                suggestions += f"3. 'create_empty_bom' - Custom BOM structure\n"
-
-            suggestions += "\nJust tell me what you'd like to do next!"
-            table_output += suggestions
-
-        return table_output
+        # --- FIX: Return ONLY the JSON string. ---
+        # Do not wrap it in conversational text. The agent's system prompt
+        # is already designed to handle and reason over the raw JSON output.
+        return analysis_json
 
     except Exception as e:
-        return f"Error analyzing schematic: {str(e)}"
+        # Returning a structured error is also a good practice.
+        error_payload = {"error": "An exception occurred during schematic analysis.", "details": str(e)}
+        return json.dumps(error_payload)
 
 
 @tool
@@ -190,7 +147,7 @@ def parametric_search(product_line: str,
         if result.get('Status', {}).get('Success') == 'true':
             search_results = result.get('Result', {})
             total_items = search_results.get('TotalItems', 0)
-            parts = search_results.get('Parts', [])
+            parts = search_results.get('PartsList', [])
 
             # Add intelligent suggestions to the response
             enhanced_result = result.copy()
