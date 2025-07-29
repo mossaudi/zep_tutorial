@@ -265,10 +265,10 @@ class SchematicAnalyzer:
             self.progress.info("Data Processing", "Cleaning and validating JSON response...")
 
             # Return the cleaned JSON directly, raising exceptions on failure
-            # cleaned_json = self.json_processor.clean_llm_response(raw_response)
-            # self.progress.success("Data Processing", "JSON response cleaned and validated.")
+            cleaned_json = self.json_processor.clean_llm_response(raw_response)
+            self.progress.success("Data Processing", "JSON response cleaned and validated.")
 
-            return raw_response
+            return cleaned_json
 
         except Exception as e:
             self.progress.error("Schematic Analysis", str(e))

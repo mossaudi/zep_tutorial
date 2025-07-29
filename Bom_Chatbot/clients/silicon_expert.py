@@ -1,10 +1,11 @@
 # clients/silicon_expert.py
-"""Silicon Expert API client."""
+"""Enhanced Silicon Expert API client with taxonomy support."""
 
 import requests
 import json
 from typing import List, Dict, Any, Optional
 from dataclasses import asdict
+from difflib import get_close_matches
 
 from Bom_Chatbot.config import SiliconExpertConfig
 from Bom_Chatbot.constants import DEFAULT_PAGE_SIZE, MAX_SEARCH_RESULTS, HTTP_OK
@@ -15,14 +16,268 @@ from Bom_Chatbot.models import Component, SiliconExpertData, EnhancedComponent, 
 from Bom_Chatbot.services.progress import get_progress_tracker
 
 
+class TaxonomyMapper:
+    """Maps product line names to Silicon Expert taxonomy."""
+
+    def __init__(self):
+        self.taxonomy_map: Dict[str, Dict[str, Any]] = {}
+        self.product_lines: List[str] = []
+        self.is_loaded = False
+
+    def _ensure_list(self, item):
+        """Ensure an item is a list, wrapping single items in a list."""
+        if item is None:
+            return []
+        if isinstance(item, list):
+            return item
+        return [item]
+
+    def _extract_product_lines(self, node, hierarchy_path):
+        """
+        Recursively extract product lines from any level of the taxonomy tree.
+
+        Args:
+            node: Current node in the taxonomy tree
+            hierarchy_path: List of dictionaries containing the path from root to current node
+        """
+        if not isinstance(node, dict):
+            return
+
+        # If this node has ProductLines, extract them
+        if 'ProductLines' in node:
+            product_lines_data = node['ProductLines']
+
+            # Handle both dict with 'ProductLine' key and direct ProductLine data
+            if isinstance(product_lines_data, dict):
+                if 'ProductLine' in product_lines_data:
+                    product_lines = self._ensure_list(product_lines_data['ProductLine'])
+                else:
+                    # If ProductLines is a dict but doesn't have 'ProductLine' key,
+                    # treat the dict itself as a product line
+                    product_lines = [product_lines_data]
+            else:
+                product_lines = self._ensure_list(product_lines_data)
+
+            # Process each product line
+            for pl in product_lines:
+                if not isinstance(pl, dict):
+                    continue
+
+                pl_name = pl.get('plName', '')
+                pl_id = pl.get('plID', '')
+                product_count = pl.get('productCount', 0)
+                package_features_type = pl.get('packageFeaturesType', 'S')
+
+                if pl_name:
+                    self.product_lines.append(pl_name)
+
+                    # Build the taxonomy entry with full hierarchy
+                    taxonomy_entry = {
+                        'original_name': pl_name,
+                        'pl_id': pl_id,
+                        'product_count': product_count,
+                        'package_features_type': package_features_type,
+                    }
+
+                    # Add hierarchy information
+                    for i, level in enumerate(hierarchy_path):
+                        level_name = level.get('name', '')
+                        level_id = level.get('id', '')
+                        level_type = level.get('type', '')
+
+                        if level_type == 'pl_type':
+                            taxonomy_entry['pl_type'] = level_name
+                        elif level_type == 'main_category':
+                            taxonomy_entry['main_category'] = level_name
+                            taxonomy_entry['main_category_id'] = level_id
+                        elif level_type == 'sub_category':
+                            taxonomy_entry['sub_category'] = level_name
+                            taxonomy_entry['sub_category_id'] = level_id
+                        else:
+                            # For additional levels, use generic naming
+                            taxonomy_entry[f'level_{i}'] = level_name
+                            taxonomy_entry[f'level_{i}_id'] = level_id
+                            taxonomy_entry[f'level_{i}_type'] = level_type
+
+                    self.taxonomy_map[pl_name.lower()] = taxonomy_entry
+
+        # Recursively process child categories
+        self._process_categories(node, hierarchy_path)
+
+    def _process_categories(self, node, hierarchy_path):
+        """Process different types of category lists in the node."""
+        category_keys = [
+            'MainCategoryList', 'SubCategoryList', 'CategoryList',
+            'MainCategory', 'SubCategory', 'Category'
+        ]
+
+        for key in category_keys:
+            if key in node:
+                categories_data = node[key]
+
+                # Handle different structures
+                if isinstance(categories_data, dict):
+                    # Check for nested category keys
+                    for nested_key in ['MainCategory', 'SubCategory', 'Category']:
+                        if nested_key in categories_data:
+                            categories = self._ensure_list(categories_data[nested_key])
+                            category_type = nested_key.lower().replace('category', '_category')
+                            self._process_category_list(categories, hierarchy_path, category_type)
+                            break
+                    else:
+                        # If no nested keys found, treat the dict as a single category
+                        categories = [categories_data]
+                        category_type = key.lower().replace('list', '').replace('category', '_category')
+                        self._process_category_list(categories, hierarchy_path, category_type)
+                else:
+                    categories = self._ensure_list(categories_data)
+                    category_type = key.lower().replace('list', '').replace('category', '_category')
+                    self._process_category_list(categories, hierarchy_path, category_type)
+
+    def _process_category_list(self, categories, hierarchy_path, category_type):
+        """Process a list of categories."""
+        for category in categories:
+            if not isinstance(category, dict):
+                continue
+
+            cat_name = category.get('CategoryName', '')
+            cat_id = category.get('CategoryID', '')
+
+            # Create new hierarchy path for this category
+            new_hierarchy = hierarchy_path + [{
+                'name': cat_name,
+                'id': cat_id,
+                'type': category_type
+            }]
+
+            # Recursively process this category
+            self._extract_product_lines(category, new_hierarchy)
+
+    def load_taxonomy(self, taxonomy_data: Dict[str, Any]) -> None:
+        """Load taxonomy data and create mapping structures."""
+        if not taxonomy_data or not taxonomy_data.get('Status', {}).get('Success') == 'true':
+            return
+
+        self.taxonomy_map.clear()
+        self.product_lines.clear()
+
+        result = taxonomy_data.get('Result', {})
+        taxonomy_list = result.get('TaxonomyList', {})
+
+        # Handle both list and dict structures for TaxonomyList
+        if isinstance(taxonomy_list, dict) and 'Taxonomy' in taxonomy_list:
+            taxonomies = self._ensure_list(taxonomy_list['Taxonomy'])
+        else:
+            taxonomies = self._ensure_list(taxonomy_list)
+
+        for taxonomy in taxonomies:
+            if not isinstance(taxonomy, dict):
+                continue
+
+            pl_type = taxonomy.get('PlType', '')
+
+            # Start with the pl_type in the hierarchy
+            hierarchy_path = [{
+                'name': pl_type,
+                'id': '',
+                'type': 'pl_type'
+            }]
+
+            # Extract product lines from this taxonomy branch
+            self._extract_product_lines(taxonomy, hierarchy_path)
+
+        self.is_loaded = True
+
+    def find_product_line(self, search_term: str) -> Dict[str, Any]:
+        """Find a product line by exact or fuzzy matching."""
+        if not self.is_loaded:
+            return {}
+
+        search_lower = search_term.lower()
+
+        # Exact match first
+        if search_lower in self.taxonomy_map:
+            return self.taxonomy_map[search_lower]
+
+        # Fuzzy matching
+        from difflib import get_close_matches
+        matches = get_close_matches(search_lower, self.taxonomy_map.keys(), n=1, cutoff=0.6)
+        if matches:
+            return self.taxonomy_map[matches[0]]
+
+        return {}
+
+    def get_all_product_lines(self) -> List[str]:
+        """Get all available product line names."""
+        return sorted(self.product_lines)
+
+    def get_product_lines_by_category(self, category_name: str) -> List[str]:
+        """Get all product lines under a specific category."""
+        category_lower = category_name.lower()
+        matching_lines = []
+
+        for pl_name, details in self.taxonomy_map.items():
+            # Check all category levels
+            for key, value in details.items():
+                if 'category' in key and isinstance(value, str):
+                    if category_lower in value.lower():
+                        matching_lines.append(details['original_name'])
+                        break
+
+        return sorted(matching_lines)
+
+    def get_hierarchy_info(self, product_line: str) -> Dict[str, Any]:
+        """Get the full hierarchy information for a product line."""
+        return self.find_product_line(product_line)
+
+    def find_best_match(self, input_pl_name: str) -> Optional[Dict[str, Any]]:
+        """Find the best matching product line from taxonomy."""
+        if not self.is_loaded or not input_pl_name:
+            return None
+
+        input_lower = input_pl_name.lower()
+
+        # Exact match first
+        if input_lower in self.taxonomy_map:
+            return self.taxonomy_map[input_lower]
+
+        # Fuzzy matching using difflib
+        close_matches = get_close_matches(
+            input_lower,
+            self.taxonomy_map.keys(),
+            n=1,
+            cutoff=0.6
+        )
+
+        if close_matches:
+            return self.taxonomy_map[close_matches[0]]
+
+        # Partial matching for common cases
+        for key, value in self.taxonomy_map.items():
+            if input_lower in key or key in input_lower:
+                return value
+
+        return None
+
+    def get_all_product_lines(self) -> List[str]:
+        """Get all available product lines."""
+        return self.product_lines.copy()
+
+    def get_taxonomy_info(self, pl_name: str) -> Optional[Dict[str, Any]]:
+        """Get complete taxonomy information for a product line."""
+        match = self.find_best_match(pl_name)
+        return match
+
+
 class SiliconExpertClient:
-    """Client for Silicon Expert API operations."""
+    """Enhanced client for Silicon Expert API operations with taxonomy support."""
 
     def __init__(self, config: SiliconExpertConfig):
         self.config = config
         self.session = requests.Session()
         self.is_authenticated = False
         self.progress = get_progress_tracker()
+        self.taxonomy_mapper = TaxonomyMapper()
 
         if not config.is_valid():
             raise ConfigurationError("Invalid Silicon Expert configuration")
@@ -44,6 +299,8 @@ class SiliconExpertClient:
             if response.status_code == HTTP_OK:
                 self.is_authenticated = True
                 self.progress.success("Authentication", "Successfully authenticated")
+                # Load taxonomy after successful authentication
+                self._load_taxonomy()
                 return True
             else:
                 self.is_authenticated = False
@@ -62,10 +319,75 @@ class SiliconExpertClient:
                 provider="Silicon Expert"
             )
 
+    def _load_taxonomy(self) -> None:
+        """Load taxonomy data from Silicon Expert."""
+        self._ensure_authenticated()
+        try:
+            self.progress.info("Taxonomy Loading", "Fetching product line taxonomy...")
+
+            response = self.session.post(
+                f"{self.config.base_url}/search/parametric/getAllTaxonomy",
+                params={'fmt': 'json'}
+            )
+
+            if response.status_code == HTTP_OK:
+                taxonomy_data = response.json()
+                self.taxonomy_mapper.load_taxonomy(taxonomy_data)
+
+                product_line_count = len(self.taxonomy_mapper.get_all_product_lines())
+                self.progress.success(
+                    "Taxonomy Loading",
+                    f"Loaded {product_line_count} product lines"
+                )
+            else:
+                self.progress.error(
+                    "Taxonomy Loading",
+                    f"Failed to load taxonomy: HTTP {response.status_code}"
+                )
+
+        except Exception as e:
+            self.progress.error("Taxonomy Loading", f"Error loading taxonomy: {str(e)}")
+
     def _ensure_authenticated(self) -> None:
         """Ensure the client is authenticated."""
         if not self.is_authenticated:
             self.authenticate()
+
+    def get_taxonomy(self) -> Dict[str, Any]:
+        """Get all taxonomy data."""
+        self._ensure_authenticated()
+
+        try:
+            response = self.session.post(
+                f"{self.config.base_url}/search/parametric/getAllTaxonomy",
+                params={'fmt': 'json'}
+            )
+
+            if response.status_code == HTTP_OK:
+                return response.json()
+            else:
+                raise SiliconExpertError(
+                    f"Failed to get taxonomy: HTTP {response.status_code}",
+                    status_code=response.status_code
+                )
+
+        except requests.RequestException as e:
+            raise SiliconExpertError(f"Taxonomy request failed: {str(e)}")
+
+    def find_matching_product_line(self, input_pl_name: str) -> Optional[str]:
+        """Find the best matching product line name from taxonomy."""
+        if not self.taxonomy_mapper.is_loaded:
+            self._load_taxonomy()
+
+        match = self.taxonomy_mapper.find_best_match(input_pl_name)
+        return match['original_name'] if match else None
+
+    def get_all_product_lines(self) -> List[str]:
+        """Get all available product lines."""
+        if not self.taxonomy_mapper.is_loaded:
+            self._load_taxonomy()
+
+        return self.taxonomy_mapper.get_all_product_lines()
 
     def _build_search_query(self, component: Component) -> str:
         """Build search query from component data."""
@@ -241,6 +563,95 @@ class SiliconExpertClient:
 
         return enhanced_components
 
+    def parametric_search(self,
+                          product_line: str,
+                          selected_filters: Optional[List[Dict[str, Any]]] = None,
+                          level: int = 3,
+                          keyword: str = "",
+                          page_number: int = 1,
+                          page_size: int = 50) -> Dict[str, Any]:
+        """Search parts by technical criteria using parametric search with taxonomy mapping."""
+        self._ensure_authenticated()
+
+        # Map the product line to the correct taxonomy name
+        mapped_pl_name = self.find_matching_product_line(product_line)
+        if mapped_pl_name and mapped_pl_name != product_line:
+            self.progress.info(
+                "Taxonomy Mapping",
+                f"Mapped '{product_line}' → '{mapped_pl_name}'"
+            )
+            product_line = mapped_pl_name
+        elif not mapped_pl_name:
+            self.progress.warning(
+                "Taxonomy Mapping",
+                f"No exact match found for '{product_line}', using original name"
+            )
+
+        self.progress.info("Parametric Search", f"Searching product line: {product_line}")
+
+        try:
+            params = {
+                'plName': product_line,
+                'fmt': 'json',
+                'level': str(level),
+                'pageNumber': str(page_number),
+                'pageSize': str(min(page_size, 500))  # Max 500 per API docs
+            }
+
+            if keyword:
+                params['keyword'] = keyword
+
+            if selected_filters:
+                params['selectedFilters'] = json.dumps(selected_filters)
+
+            response = self.session.post(
+                f"{self.config.base_url}/search/parametric/getSearchResult",
+                params=params
+            )
+
+            if response.status_code != HTTP_OK:
+                raise ParametricSearchError(
+                    f"Parametric search failed with HTTP {response.status_code}",
+                    product_line=product_line,
+                    filters=json.dumps(selected_filters) if selected_filters else "",
+                    status_code=response.status_code
+                )
+
+            api_data = response.json()
+
+            # Handle authentication errors
+            if api_data and api_data.get('Status', {}).get('Code') == '39':
+                self.progress.info("Re-authentication", "Session expired, re-authenticating...")
+                self.is_authenticated = False
+                self._ensure_authenticated()
+                # Retry the request
+                response = self.session.post(
+                    f"{self.config.base_url}/search/parametric/getSearchResult",
+                    params=params
+                )
+                if response.status_code == HTTP_OK:
+                    api_data = response.json()
+
+            if api_data.get('Status', {}).get('Success') == 'true':
+                total_items = api_data.get('Result', {}).get('TotalItems', '0')
+                self.progress.success(
+                    "Parametric Search",
+                    f"Found {total_items} parts in {product_line}"
+                )
+            else:
+                error_msg = api_data.get('Status', {}).get('Message', 'Unknown error')
+                self.progress.error("Parametric Search", error_msg)
+
+            return api_data
+
+        except requests.RequestException as e:
+            self.progress.error("Parametric Search", str(e))
+            raise ParametricSearchError(
+                f"Parametric search request failed: {str(e)}",
+                product_line=product_line,
+                filters=json.dumps(selected_filters) if selected_filters else ""
+            )
+
     def create_empty_bom(self, bom_info: BOMInfo) -> Dict[str, Any]:
         """Create an empty BOM."""
         self._ensure_authenticated()
@@ -350,77 +761,3 @@ class SiliconExpertClient:
         except requests.RequestException as e:
             raise BOMError(f"Get BOMs request failed: {str(e)}")
 
-    def parametric_search(self,
-                          product_line: str,
-                          selected_filters: Optional[List[Dict[str, Any]]] = None,
-                          level: int = 3,
-                          keyword: str = "",
-                          page_number: int = 1,
-                          page_size: int = 50) -> Dict[str, Any]:
-        """Search parts by technical criteria using parametric search."""
-        self._ensure_authenticated()
-
-        self.progress.info("Parametric Search", f"Searching product line: {product_line}")
-
-        try:
-            params = {
-                'plName': product_line,
-                'fmt': 'json',
-                'level': str(level),
-                'pageNumber': str(page_number),
-                'pageSize': str(min(page_size, 500))  # Max 500 per API docs
-            }
-
-            if keyword:
-                params['keyword'] = keyword
-
-            if selected_filters:
-                params['selectedFilters'] = json.dumps(selected_filters)
-
-            response = self.session.post(
-                f"{self.config.base_url}/search/parametric/getSearchResult",
-                params=params
-            )
-
-            if response.status_code != HTTP_OK:
-                raise ParametricSearchError(
-                    f"Parametric search failed with HTTP {response.status_code}",
-                    product_line=product_line,
-                    filters=json.dumps(selected_filters) if selected_filters else "",
-                    status_code=response.status_code
-                )
-
-            api_data = response.json()
-
-            # Handle authentication errors
-            if api_data and api_data.get('Status', {}).get('Code') == '39':
-                self.progress.info("Re-authentication", "Session expired, re-authenticating...")
-                self.is_authenticated = False
-                self._ensure_authenticated()
-                # Retry the request
-                response = self.session.post(
-                    f"{self.config.base_url}/search/parametric/getSearchResult",
-                    params=params
-                )
-                if response.status_code == HTTP_OK:
-                    api_data = response.json()
-
-            if api_data.get('Status', {}).get('Success') == 'true':
-                total_items = api_data.get('Result', {}).get('TotalItems', '0')
-                self.progress.success(
-                    "Parametric Search",
-                    f"Found {total_items} parts in {product_line}"
-                )
-            else:
-                error_msg = api_data.get('Status', {}).get('Message', 'Unknown error')
-                self.progress.error("Parametric Search", error_msg)
-
-            return api_data
-
-        except requests.RequestException as e:
-            self.progress.error("Parametric Search", str(e))
-            raise ParametricSearchError(
-                f"Parametric search request failed: {str(e)}",
-                product_line=product_line,
-                filters=json.dumps(selected_filters) if selected_filters else ""
-            )
