@@ -83,12 +83,3 @@ class JSONProcessingError(AgentError):
         super().__init__(message)
         self.raw_data = raw_data[:200] + "..." if len(raw_data) > 200 else raw_data
         self.parsing_stage = parsing_stage
-
-
-class ParametricSearchError(SiliconExpertError):
-    """Raised when parametric search fails."""
-
-    def __init__(self, message: str, product_line: str, filters: str = "", **kwargs):
-        super().__init__(message, **kwargs)
-        self.product_line = product_line
-        self.filters = filters

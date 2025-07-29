@@ -10,7 +10,7 @@ from difflib import get_close_matches
 from Bom_Chatbot.config import SiliconExpertConfig
 from Bom_Chatbot.constants import DEFAULT_PAGE_SIZE, MAX_SEARCH_RESULTS, HTTP_OK
 from Bom_Chatbot.exceptions import (
-    SiliconExpertError, AuthenticationError, ComponentSearchError, BOMError, ConfigurationError, ParametricSearchError
+    SiliconExpertError, AuthenticationError, ComponentSearchError, BOMError, ConfigurationError
 )
 from Bom_Chatbot.models import Component, SiliconExpertData, EnhancedComponent, BOMInfo
 from Bom_Chatbot.services.progress import get_progress_tracker
@@ -319,75 +319,11 @@ class SiliconExpertClient:
                 provider="Silicon Expert"
             )
 
-    def _load_taxonomy(self) -> None:
-        """Load taxonomy data from Silicon Expert."""
-        self._ensure_authenticated()
-        try:
-            self.progress.info("Taxonomy Loading", "Fetching product line taxonomy...")
-
-            response = self.session.post(
-                f"{self.config.base_url}/search/parametric/getAllTaxonomy",
-                params={'fmt': 'json'}
-            )
-
-            if response.status_code == HTTP_OK:
-                taxonomy_data = response.json()
-                self.taxonomy_mapper.load_taxonomy(taxonomy_data)
-
-                product_line_count = len(self.taxonomy_mapper.get_all_product_lines())
-                self.progress.success(
-                    "Taxonomy Loading",
-                    f"Loaded {product_line_count} product lines"
-                )
-            else:
-                self.progress.error(
-                    "Taxonomy Loading",
-                    f"Failed to load taxonomy: HTTP {response.status_code}"
-                )
-
-        except Exception as e:
-            self.progress.error("Taxonomy Loading", f"Error loading taxonomy: {str(e)}")
-
     def _ensure_authenticated(self) -> None:
         """Ensure the client is authenticated."""
         if not self.is_authenticated:
             self.authenticate()
 
-    def get_taxonomy(self) -> Dict[str, Any]:
-        """Get all taxonomy data."""
-        self._ensure_authenticated()
-
-        try:
-            response = self.session.post(
-                f"{self.config.base_url}/search/parametric/getAllTaxonomy",
-                params={'fmt': 'json'}
-            )
-
-            if response.status_code == HTTP_OK:
-                return response.json()
-            else:
-                raise SiliconExpertError(
-                    f"Failed to get taxonomy: HTTP {response.status_code}",
-                    status_code=response.status_code
-                )
-
-        except requests.RequestException as e:
-            raise SiliconExpertError(f"Taxonomy request failed: {str(e)}")
-
-    def find_matching_product_line(self, input_pl_name: str) -> Optional[str]:
-        """Find the best matching product line name from taxonomy."""
-        if not self.taxonomy_mapper.is_loaded:
-            self._load_taxonomy()
-
-        match = self.taxonomy_mapper.find_best_match(input_pl_name)
-        return match['original_name'] if match else None
-
-    def get_all_product_lines(self) -> List[str]:
-        """Get all available product lines."""
-        if not self.taxonomy_mapper.is_loaded:
-            self._load_taxonomy()
-
-        return self.taxonomy_mapper.get_all_product_lines()
 
     def _build_search_query(self, component: Component) -> str:
         """Build search query from component data."""
@@ -562,95 +498,6 @@ class SiliconExpertClient:
         )
 
         return enhanced_components
-
-    def parametric_search(self,
-                          product_line: str,
-                          selected_filters: Optional[List[Dict[str, Any]]] = None,
-                          level: int = 3,
-                          keyword: str = "",
-                          page_number: int = 1,
-                          page_size: int = 50) -> Dict[str, Any]:
-        """Search parts by technical criteria using parametric search with taxonomy mapping."""
-        self._ensure_authenticated()
-
-        # Map the product line to the correct taxonomy name
-        mapped_pl_name = self.find_matching_product_line(product_line)
-        if mapped_pl_name and mapped_pl_name != product_line:
-            self.progress.info(
-                "Taxonomy Mapping",
-                f"Mapped '{product_line}' → '{mapped_pl_name}'"
-            )
-            product_line = mapped_pl_name
-        elif not mapped_pl_name:
-            self.progress.warning(
-                "Taxonomy Mapping",
-                f"No exact match found for '{product_line}', using original name"
-            )
-
-        self.progress.info("Parametric Search", f"Searching product line: {product_line}")
-
-        try:
-            params = {
-                'plName': product_line,
-                'fmt': 'json',
-                'level': str(level),
-                'pageNumber': str(page_number),
-                'pageSize': str(min(page_size, 500))  # Max 500 per API docs
-            }
-
-            if keyword:
-                params['keyword'] = keyword
-
-            if selected_filters:
-                params['selectedFilters'] = json.dumps(selected_filters)
-
-            response = self.session.post(
-                f"{self.config.base_url}/search/parametric/getSearchResult",
-                params=params
-            )
-
-            if response.status_code != HTTP_OK:
-                raise ParametricSearchError(
-                    f"Parametric search failed with HTTP {response.status_code}",
-                    product_line=product_line,
-                    filters=json.dumps(selected_filters) if selected_filters else "",
-                    status_code=response.status_code
-                )
-
-            api_data = response.json()
-
-            # Handle authentication errors
-            if api_data and api_data.get('Status', {}).get('Code') == '39':
-                self.progress.info("Re-authentication", "Session expired, re-authenticating...")
-                self.is_authenticated = False
-                self._ensure_authenticated()
-                # Retry the request
-                response = self.session.post(
-                    f"{self.config.base_url}/search/parametric/getSearchResult",
-                    params=params
-                )
-                if response.status_code == HTTP_OK:
-                    api_data = response.json()
-
-            if api_data.get('Status', {}).get('Success') == 'true':
-                total_items = api_data.get('Result', {}).get('TotalItems', '0')
-                self.progress.success(
-                    "Parametric Search",
-                    f"Found {total_items} parts in {product_line}"
-                )
-            else:
-                error_msg = api_data.get('Status', {}).get('Message', 'Unknown error')
-                self.progress.error("Parametric Search", error_msg)
-
-            return api_data
-
-        except requests.RequestException as e:
-            self.progress.error("Parametric Search", str(e))
-            raise ParametricSearchError(
-                f"Parametric search request failed: {str(e)}",
-                product_line=product_line,
-                filters=json.dumps(selected_filters) if selected_filters else ""
-            )
 
     def create_empty_bom(self, bom_info: BOMInfo) -> Dict[str, Any]:
         """Create an empty BOM."""

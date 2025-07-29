@@ -9,7 +9,7 @@ from langchain.tools import tool
 from clients.silicon_expert import SiliconExpertClient
 from config import AppConfig
 from exceptions import AgentError, DataValidationError
-from models import Component, EnhancedComponent, ParametricSearchResult
+from models import Component, EnhancedComponent
 from services.analysis import ComponentAnalysisService
 from services.formatter import ComponentTableFormatter, ComponentDataConverter
 from services.workflow import EnhancedBOMWorkflowService, BOMManagementService
@@ -323,50 +323,17 @@ def _keyword_search_fallback(components: List[Component]) -> List[EnhancedCompon
         return []
 
 
-def _smart_parametric_search_with_fallback(component: Component) -> Optional[EnhancedComponent]:
+def _search_with_fallback(component: Component) -> Optional[EnhancedComponent]:
     """Hidden helper: Smart parametric search with automatic fallback to keyword search."""
     deps = get_dependencies()
 
-    # First attempt: Try parametric search if plName and filters are available
-    if component.pl_name and component.selected_filters:
-        try:
-            # Ensure taxonomy mapping
-            taxonomy_data = _get_taxonomy_data()
-            if taxonomy_data['success']:
-                mapped_pl_name = deps.silicon_expert_client.find_matching_product_line(component.pl_name)
-                if mapped_pl_name:
-                    # Perform parametric search
-                    result = deps.silicon_expert_client.parametric_search(
-                        product_line=mapped_pl_name,
-                        selected_filters=component.selected_filters,
-                        level=3,
-                        keyword="",
-                        page_number=1,
-                        page_size=10
-                    )
-
-                    if result.get('Status', {}).get('Success') == 'true':
-                        parts_list = result.get('Result', {}).get('PartsList', [])
-                        if parts_list:
-                            # Success! Create enhanced component from first result
-                            enhanced = _create_enhanced_component_from_parametric_result(
-                                parts_list[0], mapped_pl_name
-                            )
-                            enhanced.name = component.name  # Preserve original name
-                            enhanced.designator = component.designator
-                            enhanced.parametric_search_used = True
-                            return enhanced
-        except Exception as e:
-            print(f"Parametric search failed for {component.pl_name}: {str(e)}")
-
-    # Second attempt: Fallback to keyword search
+    # keyword search
     try:
         fallback_results = _keyword_search_fallback([component])
         if fallback_results and fallback_results[0].silicon_expert_data:
             enhanced = fallback_results[0]
             enhanced.name = component.name  # Preserve original name
             enhanced.designator = component.designator
-            enhanced.parametric_search_used = False
             return enhanced
     except Exception as e:
         print(f"Keyword search fallback failed for {component.name}: {str(e)}")
@@ -397,9 +364,8 @@ def analyze_schematic(image_url: str) -> str:
 
     This enhanced tool now automatically performs intelligent component searching:
     1. Extracts components from schematic
-    2. For each component with plName/selectedFilters: tries parametric search
-    3. Falls back to keyword search if parametric search fails
-    4. Returns comprehensive component data with enhanced information
+    2. For each component: tries keyword search
+    3. Returns comprehensive component data with enhanced information
 
     Args:
         image_url: URL of the schematic image to analyze
@@ -445,17 +411,14 @@ def analyze_schematic(image_url: str) -> str:
         # Step 4: Smart search with automatic fallback
         print("🔍 Starting intelligent component search...")
         enhanced_components = []
-        successful_parametric = 0
         successful_keyword = 0
         failed_searches = 0
 
         for i, component in enumerate(components, 1):
             print(f"Processing component {i}/{len(components)}: {component.name}")
-            enhanced = _smart_parametric_search_with_fallback(component)
+            enhanced = _search_with_fallback(component)
             if enhanced:
-                if enhanced.parametric_search_used and enhanced.silicon_expert_data:
-                    successful_parametric += 1
-                elif not enhanced.parametric_search_used and enhanced.silicon_expert_data:
+                if enhanced.silicon_expert_data:
                     successful_keyword += 1
                 else:
                     failed_searches += 1
@@ -466,7 +429,7 @@ def analyze_schematic(image_url: str) -> str:
         search_result = SearchResult(
             success=True,
             components=enhanced_components,
-            successful_searches=successful_parametric + successful_keyword,
+            successful_searches= successful_keyword,
             failed_searches=failed_searches
         )
 
@@ -475,7 +438,6 @@ def analyze_schematic(image_url: str) -> str:
 
         # Add search method summary
         summary = f"\n🔍 SEARCH SUMMARY:\n"
-        summary += f"• Parametric Search Success: {successful_parametric} components\n"
         summary += f"• Keyword Search Success: {successful_keyword} components\n"
         summary += f"• No Data Found: {failed_searches} components\n"
         summary += f"• Total Processed: {len(components)} components\n"
@@ -487,145 +449,6 @@ def analyze_schematic(image_url: str) -> str:
         error_details = traceback.format_exc()
         print(f"Full error details: {error_details}")
         return f"Error in enhanced schematic analysis: {str(e)}"
-
-
-def _create_enhanced_component_from_parametric_result(part_data: Dict[str, Any],
-                                                      product_line: str) -> EnhancedComponent:
-    """Create enhanced component from parametric search result."""
-    from models import SiliconExpertData, ParametricFeature
-
-    component = EnhancedComponent(
-        name=part_data.get('PartNumber', 'Unknown'),
-        part_number=part_data.get('PartNumber'),
-        manufacturer=part_data.get('Manufacturer'),
-        description=part_data.get('Description'),
-        quantity="1",
-        parametric_search_used=True
-    )
-
-    se_data = SiliconExpertData(
-        com_id=part_data.get('ComID'),
-        part_number=part_data.get('PartNumber'),
-        manufacturer=part_data.get('Manufacturer'),
-        description=part_data.get('Description'),
-        lifecycle=part_data.get('Lifecycle'),
-        rohs=part_data.get('RoHS'),
-        rohs_version=part_data.get('RoHSVersion'),
-        datasheet=part_data.get('Datasheet'),
-        product_line=product_line,
-        taxonomy_path=part_data.get('TaxonomyPath'),
-        yeol=part_data.get('YEOL'),
-        resilience_rating=part_data.get('ResilienceRating'),
-        military_status=part_data.get('MilitaryStatus'),
-        aml_status=part_data.get('AMLStatus')
-    )
-
-    # Extract parametric features
-    features_data = part_data.get('ParametricFeatures', {})
-    if isinstance(features_data, dict):
-        for feature_name, feature_info in features_data.items():
-            if isinstance(feature_info, dict):
-                value = feature_info.get('value', str(feature_info))
-                unit = feature_info.get('unit')
-            else:
-                value = str(feature_info)
-                unit = None
-
-            se_data.add_parametric_feature(feature_name, value, unit)
-
-    component.silicon_expert_data = se_data
-    return component
-
-
-@tool
-def parametric_search(product_line: str,
-                      selected_filters: str = "[]",
-                      level: int = 3,
-                      keyword: str = "",
-                      page_number: int = 1,
-                      page_size: int = 50) -> str:
-    """🎯 PARAMETRIC SEARCH: Enhanced parametric search with automatic taxonomy mapping.
-
-    Args:
-        product_line: Product line name (automatically mapped to taxonomy)
-        selected_filters: JSON array of filter objects
-        level: Taxonomy tree level (default: 3)
-        keyword: Additional keyword filter
-        page_number: Page number (default: 1)
-        page_size: Results per page (default: 50, max: 500)
-
-    Returns:
-        Formatted table with enhanced component data
-    """
-    try:
-        deps = get_dependencies()
-
-        # Parse filters
-        try:
-            filters_list = json.loads(selected_filters) if selected_filters else []
-            if not isinstance(filters_list, list):
-                return "Error: selected_filters must be a JSON array"
-        except json.JSONDecodeError as e:
-            return f"Error: Invalid JSON format for selected_filters - {str(e)}"
-
-        # Auto-load taxonomy for mapping (hidden from user)
-        taxonomy_data = _get_taxonomy_data()
-        if not taxonomy_data['success']:
-            return f"Error: Could not load taxonomy for product line mapping"
-
-        # Perform parametric search with enhanced features
-        result = deps.silicon_expert_client.parametric_search(
-            product_line=product_line,
-            selected_filters=filters_list if filters_list else None,
-            level=level,
-            keyword=keyword,
-            page_number=page_number,
-            page_size=page_size
-        )
-
-        if result.get('Status', {}).get('Success') == 'true':
-            search_results = result.get('Result', {})
-            total_items = search_results.get('TotalItems', 0)
-            parts_list = search_results.get('PartsList', [])
-
-            if not parts_list:
-                return json.dumps({
-                    'message': f'No parts found for product line: {product_line}',
-                    'suggestions': [
-                        'Try different filter values',
-                        'Use broader search criteria',
-                        'Consider alternative product lines'
-                    ]
-                }, indent=2)
-
-            # Process results
-            enhanced_components = []
-            for i, part in enumerate(parts_list[:20]):  # Limit for performance
-                component = _create_enhanced_component_from_parametric_result(part, product_line)
-                enhanced_components.append(component)
-
-            # Create result object
-            parametric_result = ParametricSearchResult(
-                success=True,
-                product_line=product_line,
-                total_items=total_items,
-                components=enhanced_components,
-                search_filters=filters_list
-            )
-
-            # Format results
-            table_output = deps.formatter.format_parametric_search_result(parametric_result)
-            return f"PARAMETRIC_SEARCH_COMPLETE:{table_output}"
-
-        else:
-            error_msg = result.get('Status', {}).get('Message', 'Unknown error')
-            return json.dumps({
-                'error': f'Parametric search failed: {error_msg}',
-                'product_line': product_line
-            }, indent=2)
-
-    except Exception as e:
-        return f"Error in parametric search: {str(e)}"
 
 
 @tool
@@ -684,7 +507,7 @@ def search_component_data(components_json: str) -> str:
         enhanced_components = []
         for component in components:
             # Try smart search with fallback
-            enhanced = _smart_parametric_search_with_fallback(component)
+            enhanced = _search_with_fallback(component)
             if enhanced:
                 enhanced_components.append(enhanced)
 
@@ -775,53 +598,13 @@ def add_parts_to_bom(name: str, parent_path: str, parts_json: str) -> str:
         return f"Error adding parts to BOM: {str(e)}"
 
 
-@tool
-def create_bom_from_schematic(image_url: str, bom_name: str, parent_path: str = "",
-                              description: str = "BOM created from schematic analysis") -> str:
-    """🚀 COMPLETE WORKFLOW: Full schematic-to-BOM automation."""
-    try:
-        deps = get_dependencies()
-
-        workflow_result = deps.workflow_service.create_bom_from_schematic(
-            image_url=image_url,
-            bom_name=bom_name,
-            parent_path=parent_path,
-            description=description
-        )
-
-        result_dict = {
-            "success": workflow_result.success,
-            "workflow_steps": workflow_result.workflow_steps,
-            "summary": workflow_result.summary,
-            "error_message": workflow_result.error_message
-        }
-
-        if workflow_result.search_result:
-            result_dict["components_found"] = len(workflow_result.search_result.components)
-            result_dict["successful_searches"] = workflow_result.search_result.successful_searches
-            result_dict["failed_searches"] = workflow_result.search_result.failed_searches
-
-        if workflow_result.bom_creation:
-            result_dict["bom_creation_status"] = workflow_result.bom_creation.get("Status", {})
-
-        if workflow_result.parts_addition:
-            result_dict["parts_addition_status"] = workflow_result.parts_addition.get("Status", {})
-
-        return json.dumps(result_dict, indent=2)
-
-    except Exception as e:
-        return f"Error in create BOM from schematic workflow: {str(e)}"
-
-
 # Export only public tools
 def get_tools():
     """Get all available public tools."""
     return [
         analyze_schematic,  # Enhanced with automatic search
-        parametric_search,  # Enhanced with taxonomy mapping
         search_component_data,  # Enhanced with smart fallback
         create_empty_bom,
         get_boms,
-        add_parts_to_bom,
-        create_bom_from_schematic
+        add_parts_to_bom
     ]

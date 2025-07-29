@@ -22,23 +22,6 @@ class RoHSStatus(Enum):
     NON_COMPLIANT = "Non-Compliant"
     UNKNOWN = "Unknown"
 
-
-@dataclass
-class ParametricFeature:
-    """Represents a parametric feature from Silicon Expert."""
-    name: str
-    value: str
-    unit: Optional[str] = None
-    min_value: Optional[str] = None
-    max_value: Optional[str] = None
-    typical_value: Optional[str] = None
-
-    def __str__(self) -> str:
-        if self.unit:
-            return f"{self.value} {self.unit}"
-        return self.value
-
-
 @dataclass
 class SiliconExpertData:
     """Enhanced data from Silicon Expert API with parametric features."""
@@ -63,25 +46,11 @@ class SiliconExpertData:
     all_matches: List[Dict[str, Any]] = field(default_factory=list)
 
     # New fields for parametric data
-    parametric_features: Dict[str, ParametricFeature] = field(default_factory=dict)
     package_type: Optional[str] = None
     supply_voltage: Optional[str] = None
     operating_temperature: Optional[str] = None
     power_dissipation: Optional[str] = None
     frequency: Optional[str] = None
-
-    def add_parametric_feature(self, name: str, value: str, unit: Optional[str] = None) -> None:
-        """Add a parametric feature to the component."""
-        self.parametric_features[name] = ParametricFeature(
-            name=name,
-            value=value,
-            unit=unit
-        )
-
-    def get_feature_value(self, feature_name: str) -> Optional[str]:
-        """Get the value of a specific feature."""
-        feature = self.parametric_features.get(feature_name)
-        return str(feature) if feature else None
 
 
 @dataclass
@@ -127,7 +96,6 @@ class EnhancedComponent(Component):
     """Component with Silicon Expert data and parametric features."""
     silicon_expert_data: Optional[SiliconExpertData] = None
     search_result: Optional[str] = None
-    parametric_search_used: bool = False
 
     @property
     def effective_part_number(self) -> str:
@@ -150,33 +118,6 @@ class EnhancedComponent(Component):
             return self.silicon_expert_data.description
         return self.description or "N/A"
 
-    @property
-    def has_parametric_data(self) -> bool:
-        """Check if component has parametric features."""
-        return (self.silicon_expert_data and
-                bool(self.silicon_expert_data.parametric_features))
-
-    def get_parametric_summary(self) -> Dict[str, str]:
-        """Get a summary of key parametric features."""
-        if not self.has_parametric_data:
-            return {}
-
-        summary = {}
-        features = self.silicon_expert_data.parametric_features
-
-        # Key features to highlight
-        key_features = [
-            'Package Type', 'Supply Voltage', 'Operating Temperature',
-            'Power Dissipation', 'Frequency', 'Current Rating',
-            'Voltage Rating', 'Capacitance', 'Resistance', 'Tolerance'
-        ]
-
-        for key in key_features:
-            if key in features:
-                summary[key] = str(features[key])
-
-        return summary
-
     def to_bom_part(self) -> Dict[str, str]:
         """Convert to BOM part format with enhanced data."""
         bom_part = {
@@ -191,30 +132,7 @@ class EnhancedComponent(Component):
         if self.designator:
             bom_part['designator'] = self.designator
 
-        # Add key parametric features as comments
-        if self.has_parametric_data:
-            parametric_summary = self.get_parametric_summary()
-            if parametric_summary:
-                features_str = ', '.join([f"{k}: {v}" for k, v in parametric_summary.items()])
-                bom_part['uploadedcomments'] += f" | Features: {features_str}"
-
         return bom_part
-
-
-@dataclass
-class ParametricSearchResult:
-    """Result from parametric search with enhanced component data."""
-    success: bool
-    product_line: str
-    total_items: int
-    components: List[EnhancedComponent] = field(default_factory=list)
-    search_filters: List[Dict[str, Any]] = field(default_factory=list)
-    error_message: Optional[str] = None
-
-    @property
-    def components_with_features(self) -> int:
-        """Count components that have parametric features."""
-        return len([c for c in self.components if c.has_parametric_data])
 
 
 @dataclass
@@ -294,7 +212,6 @@ class WorkflowResult:
     workflow_steps: List[str] = field(default_factory=list)
     schematic_analysis: Optional[AnalysisResult] = None
     search_result: Optional[SearchResult] = None
-    parametric_results: List[ParametricSearchResult] = field(default_factory=list)
     bom_creation: Optional[Dict[str, Any]] = None
     parts_addition: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
