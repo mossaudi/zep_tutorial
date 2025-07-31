@@ -79,8 +79,8 @@ class Component:
             parts.append(self.part_number.strip())
         if self.manufacturer:
             parts.append(self.manufacturer.strip())
-        if self.name and self.name not in parts:
-            parts.append(self.name.strip())
+        # if self.name and self.name not in parts:
+        #     parts.append(self.name.strip())
         if self.description and len(self.description) < 100:
             parts.append(self.description.strip())
         if self.features and len(self.features) < 50:

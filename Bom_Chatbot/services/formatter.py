@@ -1,11 +1,10 @@
 # services/formatter.py
 """Enhanced component table formatting service with parametric search support."""
-import json
-from typing import List, Dict, Any, Optional
 from collections import Counter
+from typing import List, Dict
 
-from Bom_Chatbot.models import EnhancedComponent, SearchResult
 from Bom_Chatbot.constants import DEFAULT_BOM_COLUMNS
+from Bom_Chatbot.models import EnhancedComponent, SearchResult
 from Bom_Chatbot.services.progress import get_progress_tracker
 
 
@@ -227,69 +226,3 @@ class ComponentTableFormatter:
                 "• Add parts to existing BOM: add_parts_to_bom(name='BOM_NAME', parent_path='PROJECT_PATH', parts_json='COMPONENT_DATA')\n" +
                 "=" * 120 + "\n"
         )
-
-
-class ComponentDataConverter:
-    """Converts component data between different formats."""
-
-    @staticmethod
-    def components_to_json(components: List[EnhancedComponent]) -> str:
-        """Convert enhanced components to JSON format."""
-        component_dicts = []
-
-        for component in components:
-            # Create base component dict
-            component_dict = {
-                'name': component.name,
-                'part_number': component.part_number,
-                'manufacturer': component.manufacturer,
-                'description': component.description,
-                'value': component.value,
-                'features': component.features,
-                'quantity': component.quantity,
-                'designator': component.designator,
-                'functional_block': component.functional_block,
-                'notes': component.notes,
-                'pl_name': component.pl_name,
-                'selected_filters': component.selected_filters
-            }
-
-            # Add Silicon Expert data if available
-            if component.silicon_expert_data:
-                se_data = component.silicon_expert_data
-                component_dict.update({
-                    'se_com_id': se_data.com_id,
-                    'se_part_number': se_data.part_number,
-                    'se_manufacturer': se_data.manufacturer,
-                    'se_description': se_data.description,
-                    'se_lifecycle': se_data.lifecycle,
-                    'se_rohs': se_data.rohs,
-                    'se_rohs_version': se_data.rohs_version,
-                    'se_datasheet': se_data.datasheet,
-                    'se_product_line': se_data.product_line,
-                    'se_taxonomy_path': se_data.taxonomy_path,
-                    'se_match_rating': se_data.match_rating,
-                    'se_match_comment': se_data.match_comment,
-                    'se_yeol': se_data.yeol,
-                    'se_resilience_rating': se_data.resilience_rating,
-                    'se_military_status': se_data.military_status,
-                    'se_aml_status': se_data.aml_status,
-                    'se_search_query': se_data.search_query,
-                    'se_total_items': se_data.total_items,
-                    'se_all_matches': se_data.all_matches
-                })
-
-            # Add search result if no Silicon Expert data
-            if component.search_result:
-                component_dict['se_search_result'] = component.search_result
-
-            # Remove None values
-            component_dict = {k: v for k, v in component_dict.items() if v is not None}
-            component_dicts.append(component_dict)
-
-        return json.dumps(component_dicts, indent=2)
-
-    @staticmethod
-    def components_to_bom_parts(components: List[EnhancedComponent]) -> List[Dict[str, str]]:
-        """Convert enhanced components to BOM parts format."""
-        return [component.to_bom_part() for component in components]
