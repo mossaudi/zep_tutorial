@@ -3,6 +3,7 @@
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from Bom_Chatbot.services.formatter import ComponentTableFormatter
 from config import AppConfig
 from clients.silicon_expert import SiliconExpertClient
 from services.analysis import ComponentAnalysisService
@@ -29,3 +30,4 @@ class Container:
             parsing_service=self.parsing_service,
             silicon_expert_client=self.silicon_expert_client
         )
+        self.formatter = ComponentTableFormatter()

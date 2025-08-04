@@ -2,12 +2,14 @@
 """Enhanced workflow orchestration service with intelligent search integration."""
 
 import json
+from dataclasses import asdict
 from typing import List, Dict, Any
 
 from Bom_Chatbot.clients.silicon_expert import SiliconExpertClient
 from Bom_Chatbot.exceptions import BOMError, AgentError
 from Bom_Chatbot.models import BOMInfo
 from Bom_Chatbot.services.progress import get_progress_tracker
+from Bom_Chatbot.utils.cache import TTLCache, cached_operation
 
 
 class BOMManagementService:
@@ -16,6 +18,7 @@ class BOMManagementService:
     def __init__(self, silicon_expert_client: SiliconExpertClient):
         self.silicon_expert_client = silicon_expert_client
         self.progress = get_progress_tracker()
+        self.cache = TTLCache(default_ttl=300)  # 5 minute cache
 
     def create_empty_bom(self,
                          name: str,
@@ -35,7 +38,7 @@ class BOMManagementService:
 
             result = self.silicon_expert_client.create_empty_bom(bom_info)
 
-            if result.get("Status", {}).get("Success") == "true":
+            if result.get("status", {}).get("success") == "TRUE":
                 self.progress.success("BOM Creation", f"BOM '{name}' created successfully")
             else:
                 error_msg = "Failed to create BOM"
@@ -49,17 +52,20 @@ class BOMManagementService:
             self.progress.error("BOM Creation", str(e))
             raise BOMError(f"Failed to create BOM: {str(e)}", bom_name=name)
 
+    @cached_operation(lambda self: self.cache,
+                      key_func=lambda self, **kwargs: f"boms_{hash(str(sorted(kwargs.items())))}")
     def get_boms(self,
                  project_name: str = "",
                  bom_creation_date_from: str = "",
                  bom_creation_date_to: str = "",
                  bom_modification_date_from: str = "",
                  bom_modification_date_to: str = "") -> Dict[str, Any]:
-        """Get BOM information with optional filters."""
+        """Get BOM information with enhanced parsing and tree structure."""
         self.progress.info("BOM Retrieval", "Fetching BOM information...")
 
         try:
-            result = self.silicon_expert_client.get_boms(
+            # Get raw API response
+            api_result = self.silicon_expert_client.get_boms(
                 project_name=project_name,
                 bom_creation_date_from=bom_creation_date_from,
                 bom_creation_date_to=bom_creation_date_to,
@@ -67,13 +73,26 @@ class BOMManagementService:
                 bom_modification_date_to=bom_modification_date_to
             )
 
-            # Count BOMs in result
-            bom_count = 0
-            if result.get("Status", {}).get("Success") == "true" and "Result" in result:
-                bom_count = len(result["Result"]) if isinstance(result["Result"], list) else 0
+            # Parse into structured format
+            from Bom_Chatbot.models import BOMTreeResult
+            bom_tree = BOMTreeResult.from_api_response(api_result)
 
-            self.progress.success("BOM Retrieval", f"Retrieved information for {bom_count} BOMs")
-            return result
+            if bom_tree.success:
+                self.progress.success(
+                    "BOM Retrieval",
+                    f"Retrieved {bom_tree.total_projects} projects with {bom_tree.total_boms} total BOMs"
+                )
+            else:
+                self.progress.error("BOM Retrieval", bom_tree.error_message or "Unknown error")
+
+            # Return both the parsed structure and original API response
+            return {
+                "bom_tree": asdict(bom_tree),
+                "raw_api_response": api_result,
+                "success": bom_tree.success,
+                "total_projects": bom_tree.total_projects,
+                "total_boms": bom_tree.total_boms
+            }
 
         except Exception as e:
             self.progress.error("BOM Retrieval", str(e))

@@ -54,20 +54,34 @@ class IntelligentBOMAgent:
         self.formatter = ComponentTableFormatter()
         print(f"✅ Initialized {len(self.tools)} tools.")
 
+        self._setup_direct_handlers()
+        print(f"✅ Registered {len(self.direct_handlers.handlers)} direct handlers.")
+
     def _create_react_agent(self):
         """Create ReAct agent with an enhanced system prompt."""
+
         system_prompt = """You are an expert Bill of Materials (BOM) management assistant. Your goal is to help users analyze electronic schematics, find component data, and manage BOMs efficiently.
 
-You will use the available tools to answer user requests. When a user provides a schematic, your primary tool is `analyze_schematic`, which automatically extracts all components and enriches them with data from the Silicon Expert database.
+        You will use the available tools to answer user requests. When a user provides a schematic, your primary tool is `analyze_schematic`, which automatically extracts all components and enriches them with data from the Silicon Expert database.
 
-Your final answer should be the direct result from the tool. If the tool returns component data, present it clearly.
+        Your final answer should be the direct result from the tool. If the tool returns component data, present it clearly.
 
-## Available Tools:
-- `analyze_schematic`: Analyzes a schematic from a URL and returns a full component list with lifecycle and compliance data.
-- `search_component_data`: Searches for specific components provided as a JSON list.
-- `create_empty_bom`: Creates a new, empty BOM.
-- `add_parts_to_bom`: Adds a list of components to an existing BOM.
-- `get_boms`: Lists all available BOMs."""
+        ## PROCESSING STRATEGY:
+            - Simple display operations (list, show, view) are handled directly for efficiency
+            - Complex analysis and reasoning tasks use full agent capabilities
+            - Always provide clear, actionable responses
+
+        ## QUOTA CONSERVATION:
+            - Large datasets are processed efficiently with minimal token usage
+            - Caching prevents redundant API calls
+            - Direct handlers bypass unnecessary LLM processing
+        
+        ## Available Tools:
+            - `analyze_schematic`: Analyzes a schematic from a URL and returns a full component list with lifecycle and compliance data.
+            - `search_component_data`: Searches for specific components provided as a JSON list.
+            - `create_empty_bom`: Creates a new, empty BOM.
+            - `add_parts_to_bom`: Adds a list of components to an existing BOM.
+            - `get_boms`: Lists all available BOMs."""
 
         self.agent = create_react_agent(self.llm, self.tools, checkpointer=MemorySaver())
         self.system_prompt = system_prompt
@@ -99,10 +113,22 @@ Your final answer should be the direct result from the tool. If the tool returns
         return str(content)
 
     def process_request(self, user_input: str):
-        """Process a user request using the ReAct agent."""
+        """Process user request with intelligent routing."""
         print(f"\n{'=' * 80}\n🤖 PROCESSING REQUEST: {user_input}\n{'=' * 80}")
 
         try:
+            # Check for direct handlers first
+            handler_func, description = self.direct_handlers.find_handler(user_input)
+
+            if handler_func:
+                print(f"🚀 Using direct handler: {description}")
+                result = handler_func(user_input)
+                print(f"\n🤖 Assistant:\n{result}")
+                print(f"\n{'=' * 80}\n✨ REQUEST COMPLETED (Direct)\n{'=' * 80}")
+                return
+
+            # Use ReAct agent for complex reasoning tasks
+            print("🧠 Using ReAct agent for complex processing...")
             messages = [SystemMessage(content=self.system_prompt), HumanMessage(content=user_input)]
             result = self.agent.invoke({"messages": messages}, self.config_dict)
 
@@ -111,12 +137,12 @@ Your final answer should be the direct result from the tool. If the tool returns
                 formatted_output = self._format_final_response(final_message.content)
                 print(f"\n🤖 Assistant:\n{formatted_output}")
 
-            print(f"\n{'=' * 80}\n✨ REQUEST COMPLETED\n{'=' * 80}")
+            print(f"\n{'=' * 80}\n✨ REQUEST COMPLETED (Agent)\n{'=' * 80}")
 
         except Exception as e:
             print(f"❌ Error processing request: {e}")
-            import traceback
-            traceback.print_exc()
+            if "quota" in str(e).lower() or "429" in str(e):
+                print("💡 Tip: You've hit the API quota limit. Try again later or use direct commands.")
 
     def run_interactive(self):
         """Run the agent in an interactive command-line mode."""
@@ -138,6 +164,57 @@ Your final answer should be the direct result from the tool. If the tool returns
             except Exception as e:
                 print(f"❌ An unexpected error occurred: {e}")
 
+    def _setup_direct_handlers(self):
+        """Setup direct handlers for operations that should bypass LLM."""
+        self.direct_handlers = DirectHandlerRegistry()
+
+        # Register BOM listing as direct handler
+        self.direct_handlers.register(
+            keywords=['list bom', 'show bom', 'get bom', 'view bom', 'display bom', 'my bom'],
+            handler_func=self._handle_bom_listing,
+            description="BOM listing (bypasses LLM for quota efficiency)"
+        )
+
+        # Add more direct handlers as needed
+        # self.direct_handlers.register(['status', 'health'], self._handle_status)
+
+    def _handle_bom_listing(self, user_input: str) -> str:
+        """Handle BOM listing requests directly."""
+        try:
+            bom_result = self.container.bom_service.get_boms()
+
+            if not bom_result.get("success", False):
+                return f"❌ Failed to retrieve BOMs: {bom_result.get('raw_api_response', {}).get('Status', {}).get('message', 'Unknown error')}"
+
+            from Bom_Chatbot.models import BOMTreeResult
+            bom_tree = BOMTreeResult(**bom_result["bom_tree"])
+            return self.container.formatter.format_bom_tree(bom_tree)
+
+        except Exception as e:
+            return f"❌ Error retrieving BOMs: {str(e)}"
+
+
+class DirectHandlerRegistry:
+    """Registry for operations that should bypass LLM processing."""
+
+    def __init__(self):
+        self.handlers = {}
+
+    def register(self, keywords: list, handler_func, description: str = ""):
+        """Register a direct handler for specific keywords."""
+        for keyword in keywords:
+            self.handlers[keyword.lower()] = {
+                'handler': handler_func,
+                'description': description
+            }
+
+    def find_handler(self, user_input: str):
+        """Find matching handler for user input."""
+        user_lower = user_input.lower()
+        for keyword, handler_info in self.handlers.items():
+            if keyword in user_lower:
+                return handler_info['handler'], handler_info['description']
+        return None, None
 
 def main():
     """Main entry point."""

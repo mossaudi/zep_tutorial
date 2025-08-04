@@ -216,3 +216,102 @@ class WorkflowResult:
     parts_addition: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     summary: Optional[str] = None
+
+
+@dataclass
+class BOMDetails:
+    """Detailed BOM information from API response."""
+    name: str
+    parts_count: str
+    creation_date: str
+    modification_date: str
+    created_user: str
+    modified_user: str
+    project_name: Optional[str] = None  # None for root-level BOMs
+
+    @classmethod
+    def from_api_response(cls, bom_data: Dict[str, Any], project_name: Optional[str] = None) -> 'BOMDetails':
+        """Create BOMDetails from API response data."""
+        return cls(
+            name=bom_data.get('BOMName', ''),
+            parts_count=bom_data.get('PartsCount', '0'),
+            creation_date=bom_data.get('CreationDate', ''),
+            modification_date=bom_data.get('ModificationDate', ''),
+            created_user=bom_data.get('createdUser', ''),
+            modified_user=bom_data.get('modifiedUser', ''),
+            project_name=project_name
+        )
+
+
+@dataclass
+class ProjectDetails:
+    """Project information with associated BOMs."""
+    name: str
+    boms: List[BOMDetails] = field(default_factory=list)
+
+    @classmethod
+    def from_api_response(cls, project_data: Dict[str, Any]) -> 'ProjectDetails':
+        """Create ProjectDetails from API response data."""
+        project_name = project_data.get('ProjectName', '')
+        boms = []
+
+        bom_list = project_data.get('BOMs', [])
+        if isinstance(bom_list, list):
+            for bom_data in bom_list:
+                if len(bom_data.get('BOMName', '')) > 0:
+                    boms.append(BOMDetails.from_api_response(bom_data, project_name))
+
+        return cls(name=project_name, boms=boms)
+
+
+@dataclass
+class BOMTreeResult:
+    """Complete BOM tree structure result."""
+    success: bool
+    projects: List[ProjectDetails] = field(default_factory=list)
+    root_boms: List[BOMDetails] = field(default_factory=list)
+    total_projects: int = 0
+    total_boms: int = 0
+    error_message: Optional[str] = None
+
+    @classmethod
+    def from_api_response(cls, api_response: Dict[str, Any]) -> 'BOMTreeResult':
+        """Create BOMTreeResult from Silicon Expert API response."""
+        if not api_response.get('Status', {}).get('success') == 'true':
+            return cls(
+                success=False,
+                error_message=api_response.get('Status', {}).get('message', 'Unknown error')
+            )
+
+        projects = []
+        root_boms = []
+
+        # Parse projects
+        projects_data = api_response.get('Projects', {})
+        if projects_data and 'Project' in projects_data:
+            project_list = projects_data['Project']
+            if isinstance(project_list, list):
+                for project_data in project_list:
+                    if len(project_data.get('ProjectName', '')) > 0:
+                        projects.append(ProjectDetails.from_api_response(project_data))
+            elif isinstance(project_list, dict):
+                # Single project case
+                projects.append(ProjectDetails.from_api_response(project_list))
+
+        # Parse root-level BOMs
+        boms_data = api_response.get('BOMs', [])
+        if isinstance(boms_data, list):
+            for bom_data in boms_data:
+                if len(bom_data.get('BOMName', '')) > 0:
+                    root_boms.append(BOMDetails.from_api_response(bom_data))
+
+        # Calculate totals
+        total_boms = len(root_boms) + sum(len(project.boms) for project in projects)
+
+        return cls(
+            success=True,
+            projects=projects,
+            root_boms=root_boms,
+            total_projects=len(projects),
+            total_boms=total_boms
+        )
