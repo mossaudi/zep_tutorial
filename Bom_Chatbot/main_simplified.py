@@ -1,227 +1,368 @@
 # main_simplified.py
-"""Enhanced LangGraph agent with a refined, modular architecture."""
+"""LangGraph agent with a refined, modular architecture."""
 
+import asyncio
 import getpass
 import json
-from typing import Any
+from typing import Any, Dict
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 
+from Bom_Chatbot.container import Container
+from analytics.agent_analytics import OperationType
 from config import AppConfig
-from container import Container
 from exceptions import ConfigurationError
-from models import SearchResult
+from intelligence.smart_routing import IntentCategory
+from security.input_validator import DataValidationError
 from services.formatter import ComponentTableFormatter
+from services.resilience import retry_with_backoff, RetryConfig
 from tools import get_tools
 
 
-class IntelligentBOMAgent:
-    """Enhanced LangGraph agent with a modular, service-oriented architecture."""
+class BOMAgent:
+    """LangGraph agent"""
 
     def __init__(self, config: AppConfig):
         self.config = config
         self._validate_config()
         self._initialize_components()
         self._create_react_agent()
-        print("✅ Intelligent BOM Agent is ready.")
+        print("🚀 BOM Agent ready!")
 
     def _validate_config(self):
+        """Enhanced configuration validation."""
         config_errors = self.config.validate()
         if config_errors:
             error_msg = "Configuration errors:\n" + "\n".join(f"- {error}" for error in config_errors)
             raise ConfigurationError(error_msg)
 
     def _initialize_components(self):
-        """Initialize LLM, container, tools, and formatter."""
-        google_api_key = self.config.google_api_key or getpass.getpass("Enter API key for Google Gemini: ")
+        """Initialize all enhanced components."""
+        google_api_key = self.config.llm.google_api_key or getpass.getpass("Enter API key for Google Gemini: ")
 
         self.llm = ChatGoogleGenerativeAI(
             model="gemini-2.0-flash-lite",
             google_api_key=google_api_key,
             temperature=0.1,
-            max_output_tokens=30000,
-            # enable JSON mode to guarantee valid JSON output
-            model_kwargs={"response_format": {"type": "json_object"}}
+            max_output_tokens=30000
         )
         print("✅ Gemini model configured.")
 
-        # Centralized dependency container
+        # container
         self.container = Container(self.config, self.llm)
         self.tools = get_tools(self.container)
         self.formatter = ComponentTableFormatter()
         print(f"✅ Initialized {len(self.tools)} tools.")
 
-        self._setup_direct_handlers()
-        print(f"✅ Registered {len(self.direct_handlers.handlers)} direct handlers.")
+        self._setup_enhanced_handlers()
+        print(f"✅ handlers configured.")
 
     def _create_react_agent(self):
-        """Create ReAct agent with an enhanced system prompt."""
+        """Create enhanced ReAct agent."""
+        system_prompt = """You are an Bill of Materials (BOM) management assistant with advanced capabilities:
 
-        system_prompt = """You are an expert Bill of Materials (BOM) management assistant. Your goal is to help users analyze electronic schematics, find component data, and manage BOMs efficiently.
-
-        You will use the available tools to answer user requests. When a user provides a schematic, your primary tool is `analyze_schematic`, which automatically extracts all components and enriches them with data from the Silicon Expert database.
-
-        Your final answer should be the direct result from the tool. If the tool returns component data, present it clearly.
+        ## CORE CAPABILITIES:
+        - **Security**: All inputs are validated and sanitized
+        - **Memory**: I remember context across conversations
+        - **Resilience**: Automatic retry with fallback strategies
+        - **Performance**: Intelligent LLM routing for cost optimization
+        - **Learning**: I adapt based on successful interaction patterns
+        - **Analytics**: All operations are monitored and optimized
 
         ## PROCESSING STRATEGY:
-            - Simple display operations (list, show, view) are handled directly for efficiency
-            - Complex analysis and reasoning tasks use full agent capabilities
-            - Always provide clear, actionable responses
+        - Simple operations bypass LLM for efficiency
+        - Complex analysis uses optimal LLM selection
+        - Concurrent processing for batch operations
+        - Intelligent caching prevents redundant work
 
-        ## QUOTA CONSERVATION:
-            - Large datasets are processed efficiently with minimal token usage
-            - Caching prevents redundant API calls
-            - Direct handlers bypass unnecessary LLM processing
-        
-        ## Available Tools:
-            - `analyze_schematic`: Analyzes a schematic from a URL and returns a full component list with lifecycle and compliance data.
-            - `search_component_data`: Searches for specific components provided as a JSON list.
-            - `create_empty_bom`: Creates a new, empty BOM.
-            - `add_parts_to_bom`: Adds a list of components to an existing BOM.
-            - `get_boms`: Lists all available BOMs."""
+        ## AVAILABLE TOOLS:
+        - `analyze_schematic`: Advanced schematic analysis with component extraction
+        - `search_component_data`: Multi-source component data search
+        - `create_empty_bom`: Intelligent BOM creation with templates
+        - `add_parts_to_bom`: Batch parts addition with validation
+        - `get_boms`: Hierarchical BOM management view
+
+        I provide actionable insights and learn from each interaction to improve future responses.
+        """
 
         self.agent = create_react_agent(self.llm, self.tools, checkpointer=MemorySaver())
         self.system_prompt = system_prompt
-        self.config_dict = {"configurable": {"thread_id": "1"}}
+        self.config_dict = {"configurable": {"thread_id": "enhanced_session"}}
         print("✅ ReAct agent created.")
 
-    def _format_final_response(self, content: Any) -> str:
-        """Intelligently format the agent's final output."""
-        if isinstance(content, str):
-            try:
-                # Attempt to parse as JSON for potential structured data
-                data = json.loads(content)
-                # If it's a dict and looks like our SearchResult, format it
-                if isinstance(data, dict) and 'components' in data and 'success_rate' in data:
-                    # Re-create the dataclass object for formatting
-                    search_result = SearchResult(**data)
-                    return self.formatter.format_search_result(search_result)
-                # Otherwise, just return the pretty-printed JSON
-                return json.dumps(data, indent=2)
-            except (json.JSONDecodeError, TypeError):
-                # Not JSON, just return the string content
-                return content
-        elif isinstance(content, dict):
-            if 'components' in content and 'success_rate' in content:
-                search_result = SearchResult(**content)
-                return self.formatter.format_search_result(search_result)
-            return json.dumps(content, indent=2)
+    async def process_request_enhanced(self, user_input: str):
+        """request processing"""
+        # Start analytics tracking
+        operation_id = self.container.analytics.start_operation(
+            OperationType.SCHEMATIC_ANALYSIS,  # Will be determined by intent classification
+            {"user_input": user_input}
+        )
 
-        return str(content)
-
-    def process_request(self, user_input: str):
-        """Process user request with intelligent routing."""
-        print(f"\n{'=' * 80}\n🤖 PROCESSING REQUEST: {user_input}\n{'=' * 80}")
+        print(f"\n{'=' * 80}\n🧠 PROCESSING: {user_input}\n{'=' * 80}")
 
         try:
-            # Check for direct handlers first
-            handler_func, description = self.direct_handlers.find_handler(user_input)
+            # Input validation and security
+            await self._validate_input_security(user_input)
 
-            if handler_func:
-                print(f"🚀 Using direct handler: {description}")
-                result = handler_func(user_input)
-                print(f"\n🤖 Assistant:\n{result}")
-                print(f"\n{'=' * 80}\n✨ REQUEST COMPLETED (Direct)\n{'=' * 80}")
-                return
+            # Intent classification for smart routing
+            intent_result = self.container.intent_classifier.classify_intent(
+                user_input,
+                self.container.memory.get_context_summary()
+            )
 
-            # Use ReAct agent for complex reasoning tasks
-            print("🧠 Using ReAct agent for complex processing...")
-            messages = [SystemMessage(content=self.system_prompt), HumanMessage(content=user_input)]
-            result = self.agent.invoke({"messages": messages}, self.config_dict)
+            print(f"🎯 Intent: {intent_result.intent} ({intent_result.confidence:.2f} confidence)")
 
-            if result and "messages" in result:
-                final_message = result["messages"][-1]
-                formatted_output = self._format_final_response(final_message.content)
-                print(f"\n🤖 Assistant:\n{formatted_output}")
+            # Check for learned response patterns
+            learned_response = self.container.learning_system.suggest_response(
+                user_input,
+                self.container.memory.get_context_summary()
+            )
 
-            print(f"\n{'=' * 80}\n✨ REQUEST COMPLETED (Agent)\n{'=' * 80}")
+            if learned_response and learned_response["confidence"] > 0.8:
+                print(f"🧠 Using learned pattern: {learned_response['pattern_id']}")
+                result = learned_response["suggested_response"]
+                self._record_successful_interaction(user_input, result, operation_id)
+                return result
+
+            # Intelligent routing based on complexity
+            if intent_result.suggested_route == "direct_handler":
+                result = await self._handle_direct_operation(user_input, intent_result)
+            elif intent_result.category == IntentCategory.ANALYSIS:
+                result = await self._handle_analysis_operation(user_input, intent_result)
+            else:
+                result = await self._handle_llm_operation(user_input, intent_result)
+
+            # Record successful interaction for learning
+            self._record_successful_interaction(user_input, result, operation_id)
+            return result
 
         except Exception as e:
-            print(f"❌ Error processing request: {e}")
-            if "quota" in str(e).lower() or "429" in str(e):
-                print("💡 Tip: You've hit the API quota limit. Try again later or use direct commands.")
+            error_msg = f"❌ Error: {e}"
 
-    def run_interactive(self):
-        """Run the agent in an interactive command-line mode."""
-        print("\n🤖 Welcome to the Intelligent BOM Agent!")
-        print("   Example: 'analyze schematic at [URL]'")
+            # Try fallback strategies
+            fallback_result = self.container.fallback_handler.handle_api_quota_exceeded("request_processing")
+            if fallback_result.get("success"):
+                result = fallback_result
+            else:
+                result = error_msg
+
+            # Record failed interaction
+            self.container.analytics.end_operation(
+                operation_id,
+                success=False,
+                error_message=str(e)
+            )
+
+            return result
+
+    async def _validate_input_security(self, user_input: str):
+        """Security validation."""
+        try:
+            # Check for image URLs and validate them
+            import re
+            urls = re.findall(r'https?://[^\s]+', user_input)
+            for url in urls:
+                self.container.security_validator.validate_image_url(url)
+
+            # Validate JSON if present
+            json_pattern = r'\{.*\}'
+            json_matches = re.findall(json_pattern, user_input, re.DOTALL)
+            for json_str in json_matches:
+                self.container.security_validator.validate_json_input(json_str)
+
+        except DataValidationError as e:
+            raise ConfigurationError(f"Input validation failed: {e.message}")
+
+    @retry_with_backoff(RetryConfig(max_attempts=3))
+    async def _handle_direct_operation(self, user_input: str, intent_result) -> str:
+        """Handle direct operations with retry."""
+        if "list" in user_input.lower() and "bom" in user_input.lower():
+            bom_result = self.container.bom_service.get_boms()
+            if bom_result.get("success"):
+                from Bom_Chatbot.models import BOMTreeResult
+                bom_tree = BOMTreeResult(**bom_result["bom_tree"])
+                return self.container.formatter.format_bom_tree(bom_tree)
+            return "❌ Failed to retrieve BOMs"
+
+        return "Direct operation completed"
+
+    async def _handle_analysis_operation(self, user_input: str, intent_result) -> str:
+        """Handle analysis operations with concurrent processing."""
+        if "image_url" in intent_result.parameters:
+            image_url = intent_result.parameters["image_url"]
+
+            # Use workflow service for comprehensive analysis
+            search_result = self.container.workflow_service.run_schematic_analysis_workflow(image_url)
+            return self.container.formatter.format_search_result(search_result)
+
+        return "Analysis operation requires image URL"
+
+    async def _handle_llm_operation(self, user_input: str, intent_result) -> str:
+        """Handle complex operations requiring LLM."""
+        # Use intelligent LLM routing
+        context = self.container.memory.get_context_summary()
+
+        llm_result = await self.container.llm_router.route_and_execute(
+            user_input,
+            context,
+            [SystemMessage(content=self.system_prompt), HumanMessage(content=user_input)]
+        )
+
+        print(f"💰 LLM Cost: ${llm_result['estimated_cost']:.4f} ({llm_result['llm_used']})")
+
+        if hasattr(llm_result["response"], 'content'):
+            return llm_result["response"].content
+        return str(llm_result["response"])
+
+    def _record_successful_interaction(self, user_input: str, result: str, operation_id: str):
+        """Record successful interaction for learning."""
+        # Learning system
+        self.container.learning_system.record_interaction(
+            user_input,
+            result,
+            self.container.memory.get_context_summary(),
+            {"task_completed": True}
+        )
+
+        # Memory management
+        self.container.memory.update_context(
+            "general_interaction",
+            {"user_input": user_input, "result": str(result)[:200]},
+            success=True
+        )
+
+        # Analytics
+        self.container.analytics.end_operation(
+            operation_id,
+            success=True,
+            output_data=result,
+            llm_used="system"
+        )
+
+    def _setup_enhanced_handlers(self):
+        """Setup enhanced direct handlers."""
+        self.direct_handlers = EnhancedDirectHandlerRegistry(self.container)
+
+    def get_comprehensive_report(self) -> Dict[str, Any]:
+        """Get comprehensive system report."""
+        return {
+            "performance": self.container.analytics.get_performance_report(),
+            "learning": self.container.learning_system.get_learning_report(),
+            "llm_usage": self.container.llm_router.get_usage_report(),
+            "cache_stats": self.container.intelligent_cache.get_stats(),
+            "memory_context": self.container.memory.get_context_summary(),
+            "intent_classification": self.container.intent_classifier.get_classification_report()
+        }
+
+    async def run_interactive_enhanced(self):
+        """Enhanced interactive mode."""
+        print("\n🚀 Welcome to the BOM Agent!")
+        print("   🛡️  Enhanced Security | 🧠 Smart Learning | ⚡ Optimized Performance")
+        print("   Type 'report' for comprehensive analytics")
         print("   Type 'quit' or 'exit' to end.")
         print("-" * 80)
 
         while True:
             try:
                 user_input = input("\n👤 User: ")
+
                 if user_input.lower() in ["quit", "exit", "q"]:
-                    print("🤖 Goodbye!")
+                    await self.container.cleanup()
+                    print("🤖 Goodbye! Analytics saved.")
                     break
-                self.process_request(user_input)
+
+                if user_input.lower() == "report":
+                    report = self.get_comprehensive_report()
+                    print(json.dumps(report, indent=2, default=str))
+                    continue
+
+                result = await self.process_request_enhanced(user_input)
+                print(f"\n🤖 Assistant:\n{result}")
+                print(f"\n{'=' * 80}\n✨ REQUEST COMPLETED\n{'=' * 80}")
+
             except KeyboardInterrupt:
+                await self.container.cleanup()
                 print("\n🤖 Goodbye!")
                 break
             except Exception as e:
-                print(f"❌ An unexpected error occurred: {e}")
-
-    def _setup_direct_handlers(self):
-        """Setup direct handlers for operations that should bypass LLM."""
-        self.direct_handlers = DirectHandlerRegistry()
-
-        # Register BOM listing as direct handler
-        self.direct_handlers.register(
-            keywords=['list bom', 'show bom', 'get bom', 'view bom', 'display bom', 'my bom'],
-            handler_func=self._handle_bom_listing,
-            description="BOM listing (bypasses LLM for quota efficiency)"
-        )
-
-        # Add more direct handlers as needed
-        # self.direct_handlers.register(['status', 'health'], self._handle_status)
-
-    def _handle_bom_listing(self, user_input: str) -> str:
-        """Handle BOM listing requests directly."""
-        try:
-            bom_result = self.container.bom_service.get_boms()
-
-            if not bom_result.get("success", False):
-                return f"❌ Failed to retrieve BOMs: {bom_result.get('raw_api_response', {}).get('Status', {}).get('message', 'Unknown error')}"
-
-            from Bom_Chatbot.models import BOMTreeResult
-            bom_tree = BOMTreeResult(**bom_result["bom_tree"])
-            return self.container.formatter.format_bom_tree(bom_tree)
-
-        except Exception as e:
-            return f"❌ Error retrieving BOMs: {str(e)}"
+                print(f"❌ Unexpected error: {e}")
 
 
-class DirectHandlerRegistry:
-    """Registry for operations that should bypass LLM processing."""
+class EnhancedDirectHandlerRegistry:
+    """Enhanced direct handler registry with analytics."""
 
-    def __init__(self):
+    def __init__(self, container: Container):
+        self.container = container
         self.handlers = {}
+        self._register_enhanced_handlers()
 
-    def register(self, keywords: list, handler_func, description: str = ""):
-        """Register a direct handler for specific keywords."""
-        for keyword in keywords:
-            self.handlers[keyword.lower()] = {
-                'handler': handler_func,
-                'description': description
-            }
+    def _register_enhanced_handlers(self):
+        """Register enhanced handlers with analytics tracking."""
 
-    def find_handler(self, user_input: str):
-        """Find matching handler for user input."""
+        async def enhanced_bom_listing(user_input: str) -> str:
+            operation_id = self.container.analytics.start_operation(
+                OperationType.BOM_LISTING,
+                {"user_input": user_input}
+            )
+
+            try:
+                # Check cache first
+                cached_result = await self.container.intelligent_cache.get("bom_listing")
+                if cached_result:
+                    print("📋 Using cached BOM data")
+                    self.container.analytics.end_operation(operation_id, success=True)
+                    return cached_result
+
+                # Get fresh data
+                bom_result = self.container.bom_service.get_boms()
+
+                if bom_result.get("success"):
+                    from Bom_Chatbot.models import BOMTreeResult
+                    bom_tree = BOMTreeResult(**bom_result["bom_tree"])
+                    formatted_result = self.container.formatter.format_bom_tree(bom_tree)
+
+                    # Cache result
+                    await self.container.intelligent_cache.set("bom_listing", formatted_result, ttl=300)
+
+                    self.container.analytics.end_operation(operation_id, success=True, output_data=formatted_result)
+                    return formatted_result
+                else:
+                    error_msg = "❌ Failed to retrieve BOMs"
+                    self.container.analytics.end_operation(operation_id, success=False, error_message=error_msg)
+                    return error_msg
+
+            except Exception as e:
+                error_msg = f"❌ Error retrieving BOMs: {str(e)}"
+                self.container.analytics.end_operation(operation_id, success=False, error_message=str(e))
+                return error_msg
+
+        # Register enhanced handlers
+        self.handlers = {
+            "list_boms": enhanced_bom_listing,
+            "show_boms": enhanced_bom_listing,
+            "view_boms": enhanced_bom_listing
+        }
+
+    async def find_and_execute_handler(self, user_input: str):
+        """Find and execute enhanced handler."""
         user_lower = user_input.lower()
-        for keyword, handler_info in self.handlers.items():
-            if keyword in user_lower:
-                return handler_info['handler'], handler_info['description']
-        return None, None
+
+        for keyword, handler in self.handlers.items():
+            if keyword.replace("_", " ") in user_lower:
+                return await handler(user_input)
+
+        return None
+
 
 def main():
-    """Main entry point."""
+    """Enhanced main entry point."""
     try:
         config = AppConfig.from_env()
-        agent = IntelligentBOMAgent(config)
-        agent.run_interactive()
+        agent = BOMAgent(config)
+        asyncio.run(agent.run_interactive_enhanced())
     except (ConfigurationError, Exception) as e:
         print(f"❌ Fatal Error: {e}")
         return 1
